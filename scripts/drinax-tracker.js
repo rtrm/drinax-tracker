@@ -238,47 +238,59 @@ class DrinaxTrackerApp extends Application {
     }
     const raw = event.dataTransfer.getData("text/plain");
     console.log("Drinax Tracker | drop payload:", raw);
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (err) {
-      ui.notifications.warn("Drinax Tracker: couldn't read what was dropped — see the browser console (F12) for the raw payload.");
-      return;
-    }
-    if (!data?.uuid) {
-      ui.notifications.warn("Drinax Tracker: dropped item has no linked document UUID — see the browser console (F12) for the raw payload.");
-      return;
-    }
-    const doc = await fromUuid(data.uuid);
-    if (!doc) {
-      ui.notifications.warn(`Drinax Tracker: couldn't resolve document ${data.uuid}.`);
+    let data = null;
+    try { data = JSON.parse(raw); } catch (err) { /* not a Foundry document drag, see plain-text fallback below */ }
+
+    if (data?.uuid) {
+      const doc = await fromUuid(data.uuid);
+      if (!doc) {
+        ui.notifications.warn(`Drinax Tracker: couldn't resolve document ${data.uuid}.`);
+        return;
+      }
+      if (this.currentTab === "contacts") {
+        if (data.type !== "Actor") {
+          ui.notifications.warn(`Drop an Actor onto the Contacts tab to create a contact (got type "${data.type}").`);
+          return;
+        }
+        this._pendingActorUuid = doc.uuid;
+        this._openDrawer("contact", null);
+        const nameField = this.root.querySelector("[data-c-name]");
+        const socField = this.root.querySelector("[data-c-soc]");
+        const avField = this.root.querySelector("[data-c-av]");
+        if (nameField) nameField.value = doc.name;
+        const soc = guessActorSoc(doc);
+        if (soc !== "" && socField) {
+          socField.value = soc;
+          if (avField) avField.value = calcAV(soc);
+        }
+      } else {
+        this._pendingSourceUuid = doc.uuid;
+        this._openDrawer("world", null);
+        const nameField = this.root.querySelector("[data-w-name]");
+        const uwpField = this.root.querySelector("[data-w-uwp]");
+        if (nameField) nameField.value = doc.name;
+        const uwp = guessWorldUwp(doc);
+        if (uwp && uwpField) uwpField.value = uwp;
+      }
       return;
     }
 
+    // Not a Foundry document drag — some modules (e.g. Traveller Toolkit) just
+    // put plain text on the drag payload instead of a linked document. Use it
+    // as a starting name rather than treating it as an error.
+    const text = (raw || "").trim();
+    if (!text) {
+      ui.notifications.warn("Drinax Tracker: couldn't read what was dropped — see the browser console (F12) for the raw payload.");
+      return;
+    }
     if (this.currentTab === "contacts") {
-      if (data.type !== "Actor") {
-        ui.notifications.warn(`Drop an Actor onto the Contacts tab to create a contact (got type "${data.type}").`);
-        return;
-      }
-      this._pendingActorUuid = doc.uuid;
       this._openDrawer("contact", null);
       const nameField = this.root.querySelector("[data-c-name]");
-      const socField = this.root.querySelector("[data-c-soc]");
-      const avField = this.root.querySelector("[data-c-av]");
-      if (nameField) nameField.value = doc.name;
-      const soc = guessActorSoc(doc);
-      if (soc !== "" && socField) {
-        socField.value = soc;
-        if (avField) avField.value = calcAV(soc);
-      }
-    } else if (this.currentTab === "worlds") {
-      this._pendingSourceUuid = doc.uuid;
+      if (nameField) nameField.value = text;
+    } else {
       this._openDrawer("world", null);
       const nameField = this.root.querySelector("[data-w-name]");
-      const uwpField = this.root.querySelector("[data-w-uwp]");
-      if (nameField) nameField.value = doc.name;
-      const uwp = guessWorldUwp(doc);
-      if (uwp && uwpField) uwpField.value = uwp;
+      if (nameField) nameField.value = text;
     }
   }
 
