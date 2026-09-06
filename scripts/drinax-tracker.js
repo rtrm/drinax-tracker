@@ -101,12 +101,108 @@ function getCampaignDate() {
   }
 }
 
+// A single incrementing integer for the current campaign day, built from the
+// same mgt2e Year/Day settings as getCampaignDate(), so elapsed-day math
+// (for Standing drift) can be done with plain subtraction across year
+// boundaries. Assumes a 365-day campaign year, which matches how mgt2e's own
+// Day field counts (no leap-year handling).
+function gameDayIndex() {
+  try {
+    const year = Number(game.settings.get("mgt2e", "currentYear"));
+    const day = Number(game.settings.get("mgt2e", "currentDay"));
+    if (!Number.isFinite(year) || !Number.isFinite(day)) return null;
+    return year * 365 + day;
+  } catch (err) {
+    return null;
+  }
+}
+
+function defaultStandingBaseline(category) {
+  if (category === "imperium") return 0;
+  if (category === "hierate") return -5;
+  return 0;
+}
+
+// Drifts a faction's Standing one point toward its baseline for every 30
+// in-game days elapsed since the last change (manual or automatic), without
+// overshooting the baseline. Mutates `faction` in place. Returns
+// { touched, change } — touched means the bookkeeping field changed (so the
+// caller should persist) even if no visible Standing change happened yet;
+// change is { field, from, to } when Standing itself moved, else null.
+function applyStandingDrift(faction) {
+  if (!STANDING_CATEGORIES.includes(faction.category)) return { touched: false, change: null };
+  if (typeof faction.standing !== "number") return { touched: false, change: null };
+  const nowIdx = gameDayIndex();
+  if (nowIdx === null) return { touched: false, change: null };
+
+  if (typeof faction.standingUpdatedDay !== "number") {
+    faction.standingUpdatedDay = nowIdx;
+    return { touched: true, change: null };
+  }
+
+  const baseline = typeof faction.standingBaseline === "number" ? faction.standingBaseline : defaultStandingBaseline(faction.category);
+  if (faction.standing === baseline) return { touched: false, change: null };
+
+  const elapsed = nowIdx - faction.standingUpdatedDay;
+  const steps = Math.floor(elapsed / 30);
+  if (steps <= 0) return { touched: false, change: null };
+
+  const direction = faction.standing < baseline ? 1 : -1;
+  const maxSteps = Math.abs(baseline - faction.standing);
+  const appliedSteps = Math.min(steps, maxSteps);
+  const from = faction.standing;
+  faction.standing += direction * appliedSteps;
+  faction.standingUpdatedDay = (appliedSteps === steps) ? faction.standingUpdatedDay + steps * 30 : nowIdx;
+  return { touched: true, change: { field: "Standing", from, to: faction.standing } };
+}
+
+function pushAutoLogEntry(data, entityName, changes) {
+  data.log = data.log || [];
+  data.log.unshift({
+    id: uid(),
+    realTime: new Date().toISOString(),
+    gameDate: getCampaignDate(),
+    entityType: "Faction",
+    entityName,
+    changes,
+    reason: "Automatic drift toward baseline Standing (30 in-game days elapsed)."
+  });
+}
+
+// Runs Standing drift across all factions in `data` (mutating it in place).
+// Returns true if anything changed and the caller should persist `data`.
+function runStandingDrift(data) {
+  let dirty = false;
+  (data.factions || []).forEach(f => {
+    const result = applyStandingDrift(f);
+    if (result.touched) dirty = true;
+    if (result.change) pushAutoLogEntry(data, f.name, [result.change]);
+  });
+  return dirty;
+}
+
+// Re-reads the saved data, applies drift, and persists + refreshes the open
+// tracker window (if any) — used when the mgt2e campaign date changes while
+// nobody has the tracker open.
+async function checkStandingDriftAndPersist() {
+  if (!game.user.isGM) return;
+  let data = game.settings.get(MODULE_ID, "data");
+  if (!data) return;
+  if (!runStandingDrift(data)) return;
+  await game.settings.set(MODULE_ID, "data", data);
+  const app = game.modules.get(MODULE_ID)?.app;
+  if (app?.rendered) {
+    app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+    app._renderContent();
+  }
+}
+
 function seedData() {
   return {
     factions: [
       { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", protected: true },
-      { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here.", standing: 0, protected: true },
-      { id: uid(), category: "hierate", name: "The Aslan Hierate", disposition: "neutral", contact: "", notes: "The Hierate as a whole — track its overall relationship with Drinax here. Individual clans go under Aslan Clan.", standing: -5, protected: true },
+      { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here.", standing: 0, standingBaseline: 0, standingUpdatedDay: null, protected: true },
+      { id: uid(), category: "hierate", name: "The Aslan Hierate", disposition: "neutral", contact: "", notes: "The Hierate as a whole — track its overall relationship with Drinax here. Individual clans go under Aslan Clan.", standing: -5, standingBaseline: -5, standingUpdatedDay: null, protected: true },
       { id: uid(), category: "aslan_clan", name: "Example Aslan Clan", disposition: "neutral", contact: "", notes: "Rename to an actual clan from your game and track its own territory ambitions here — add as many clans as you need.", protected: false },
       { id: uid(), category: "pirate", name: "Example Pirate Band", disposition: "unfriendly", contact: "", notes: "Rename to a rival or allied pirate crew from your campaign.", protected: false },
       { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups.", protected: false },
@@ -160,6 +256,7 @@ class DrinaxTrackerApp extends Application {
     (data.factions || []).forEach(f => {
       if (f.category === "aslan") { f.category = "hierate"; migrated = true; }
     });
+    const drifted = runStandingDrift(data);
     this.state = {
       factions: data.factions || [],
       contacts: data.contacts || [],
@@ -167,7 +264,7 @@ class DrinaxTrackerApp extends Application {
       pri: data.pri ?? "",
       log: data.log || []
     };
-    if (migrated) await this._saveData();
+    if (migrated || drifted) await this._saveData();
   }
 
   async _saveData() {
@@ -591,7 +688,11 @@ class DrinaxTrackerApp extends Application {
       <div class="dr-field"><label>Category</label>${this._customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
       <div class="dr-field"><label>Disposition toward the party</label>${this._customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
       <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
-      <div class="dr-field" data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
+      <div data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}">
+        <div class="dr-field"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
+        <div class="dr-field"><label>Standing reverts toward (baseline)</label><input type="number" data-f-standing-baseline value="${f.standingBaseline === "" || f.standingBaseline === null || f.standingBaseline === undefined ? defaultStandingBaseline(f.category) : f.standingBaseline}" placeholder="e.g. 0"></div>
+        <p class="dr-card-meta">Standing drifts 1 point toward the baseline for every 30 in-game days elapsed.</p>
+      </div>
       <div class="dr-field"><label>Notes</label><textarea data-f-notes placeholder="Goals, assets, history with the party...">${esc(f.notes)}</textarea></div>
       <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
       <div class="dr-drawer-actions">
@@ -712,12 +813,15 @@ class DrinaxTrackerApp extends Application {
     const name = root.querySelector("[data-f-name]").value.trim();
     if (!name) { ui.notifications.warn("Please enter a faction name."); return; }
     const standingRaw = root.querySelector("[data-f-standing]").value.trim();
+    const standingBaselineRaw = root.querySelector("[data-f-standing-baseline]").value.trim();
+    const category = root.querySelector("[data-f-category]").value;
     const data = {
       name,
-      category: root.querySelector("[data-f-category]").value,
+      category,
       disposition: root.querySelector("[data-f-disposition]").value,
       contact: root.querySelector("[data-f-contact]").value.trim(),
       standing: standingRaw === "" ? "" : Number(standingRaw),
+      standingBaseline: standingBaselineRaw === "" ? defaultStandingBaseline(category) : Number(standingBaselineRaw),
       notes: root.querySelector("[data-f-notes]").value.trim(),
       protected: root.querySelector("[data-f-protected]").checked,
     };
@@ -732,10 +836,11 @@ class DrinaxTrackerApp extends Application {
       const nextStanding = typeof data.standing === "number" ? data.standing : null;
       if (prevStanding !== nextStanding) {
         changes.push({ field: "Standing", from: prevStanding ?? "—", to: nextStanding ?? "—" });
+        data.standingUpdatedDay = gameDayIndex();
       }
       this.state.factions[idx] = { ...prev, ...data };
     } else {
-      this.state.factions.push({ id: uid(), ...data });
+      this.state.factions.push({ id: uid(), standingUpdatedDay: gameDayIndex(), ...data });
     }
     await this._saveData();
     this._closeDrawer();
@@ -881,6 +986,17 @@ Hooks.once("ready", () => {
     mod.app.render(true);
   };
   if (mod) mod.api = { open: openTracker };
+
+  // Catch up on any Standing drift accumulated since the world was last open.
+  if (game.user.isGM) checkStandingDriftAndPersist();
+});
+
+// Re-check Standing drift whenever the GM advances the mgt2e campaign date,
+// so it stays current even if nobody has the tracker open.
+Hooks.on("updateSetting", (setting) => {
+  if (setting.key === "mgt2e.currentYear" || setting.key === "mgt2e.currentDay") {
+    checkStandingDriftAndPersist();
+  }
 });
 
 // Best-effort button in the Journal Directory header. If Foundry's sidebar
