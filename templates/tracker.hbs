@@ -283,7 +283,6 @@
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   }
   #drinax-root .dr-field input,
-  #drinax-root .dr-field select,
   #drinax-root .dr-field textarea {
     width: 100%;
     background: var(--panel-alt);
@@ -295,28 +294,59 @@
     font-family: inherit;
   }
   #drinax-root .dr-field textarea { resize: vertical; min-height: 60px; }
-  #drinax-root .dr-field select {
-    padding: 12px 30px 12px 9px;
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    background-color: var(--panel-alt);
-    color: var(--text);
-    background-image:
-      linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-      linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-    background-position:
-      calc(100% - 18px) calc(50% - 3px),
-      calc(100% - 13px) calc(50% - 3px);
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-  }
-  #drinax-root .dr-field select option {
+
+  /* Custom dropdown, used instead of a native <select> so its colors are
+     never overridden by the OS's native combo-box theming. */
+  #drinax-root .dr-select { position: relative; }
+  #drinax-root .dr-select-btn {
+    width: 100%;
+    text-align: left;
     background: var(--panel-alt);
+    border: 1px solid var(--border);
     color: var(--text);
+    padding: 7px 30px 7px 9px;
+    border-radius: 4px;
+    font-size: 12.5px;
+    font-family: inherit;
+    cursor: pointer;
+    position: relative;
   }
+  #drinax-root .dr-select-btn::after {
+    content: "";
+    position: absolute;
+    right: 12px;
+    top: 45%;
+    width: 6px; height: 6px;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    transform: translateY(-50%) rotate(45deg);
+  }
+  #drinax-root .dr-select-btn:hover { border-color: var(--text-muted); }
+  #drinax-root .dr-select-btn:focus { outline: none; border-color: var(--gold); }
+  #drinax-root .dr-select-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0; right: 0;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 50;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+  }
+  #drinax-root .dr-select-menu.open { display: block; }
+  #drinax-root .dr-select-opt {
+    padding: 7px 10px;
+    font-size: 12.5px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  #drinax-root .dr-select-opt:hover { background: var(--panel); }
+  #drinax-root .dr-select-opt.selected { color: var(--gold); }
+
   #drinax-root .dr-field input:focus,
-  #drinax-root .dr-field select:focus,
   #drinax-root .dr-field textarea:focus {
     outline: none; border-color: var(--gold);
   }

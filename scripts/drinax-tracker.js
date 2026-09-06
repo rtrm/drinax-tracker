@@ -171,6 +171,14 @@ class DrinaxTrackerApp extends Application {
     root.addEventListener("dragover", (e) => e.preventDefault());
     root.addEventListener("drop", (e) => this._onDrop(e));
 
+    if (this._outsideClickHandler) document.removeEventListener("click", this._outsideClickHandler);
+    this._outsideClickHandler = (e) => {
+      if (!e.target.closest(".dr-select")) {
+        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+      }
+    };
+    document.addEventListener("click", this._outsideClickHandler);
+
     // Delegated clicks for dynamically generated card/filter/drawer content
     root.addEventListener("click", (e) => {
       const filterBtn = e.target.closest("[data-dr-filter]");
@@ -211,6 +219,29 @@ class DrinaxTrackerApp extends Application {
 
       const cancel = e.target.closest("[data-dr-cancel]");
       if (cancel) { this._closeDrawer(); return; }
+
+      const selectToggle = e.target.closest("[data-dr-select-toggle]");
+      if (selectToggle) {
+        const menu = selectToggle.nextElementSibling;
+        const wasOpen = menu.classList.contains("open");
+        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+        if (!wasOpen) menu.classList.add("open");
+        return;
+      }
+
+      const selectOpt = e.target.closest("[data-dr-select-value]");
+      if (selectOpt) {
+        const wrapper = selectOpt.closest(".dr-select");
+        const hidden = wrapper.querySelector("input[type=hidden]");
+        const btn = wrapper.querySelector("[data-dr-select-toggle]");
+        hidden.value = selectOpt.dataset.drSelectValue;
+        btn.textContent = selectOpt.textContent;
+        wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === selectOpt));
+        wrapper.querySelector(".dr-select-menu").classList.remove("open");
+        return;
+      }
+
+      root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
     });
 
     // Delegated input for live Asset Value recalculation as SOC changes
@@ -435,19 +466,21 @@ class DrinaxTrackerApp extends Application {
     }
   }
 
-  _factionOptionsHtml(selected) {
-    return FACTION_CATEGORIES.map(c => `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.label)}</option>`).join("");
-  }
-  _dispositionOptionsHtml(selected) {
-    return DISPOSITIONS.map(d => `<option value="${d.id}" ${d.id === selected ? "selected" : ""}>${esc(d.label)}</option>`).join("");
-  }
-  _roleOptionsHtml(selected) {
-    return CONTACT_ROLES.map(r => `<option value="${r.id}" ${r.id === selected ? "selected" : ""}>${esc(r.label)}</option>`).join("");
-  }
-  _worldFactionOptionsHtml(selected) {
-    let html = `<option value="">Unclaimed / independent</option>`;
-    html += this.state.factions.map(f => `<option value="${f.id}" ${f.id === selected ? "selected" : ""}>${esc(f.name)}</option>`).join("");
-    return html;
+  // Custom dropdown markup used in place of native <select>, since native
+  // select popups on this platform ignore our dark theme colors (Windows'
+  // combo-box chrome overrides author styling for both the closed box and,
+  // in some cases, the popup list). The hidden input keeps the same
+  // data-attribute the save methods already query, so nothing else changes.
+  _customSelectHtml(dataAttr, items, selected) {
+    const selectedItem = items.find(it => it.value === (selected ?? ""));
+    const label = selectedItem ? selectedItem.label : "";
+    const opts = items.map(it => `<div class="dr-select-opt ${it.value === (selected ?? "") ? "selected" : ""}" data-dr-select-value="${esc(it.value)}">${esc(it.label)}</div>`).join("");
+    return `
+      <div class="dr-select">
+        <button type="button" class="dr-select-btn" data-dr-select-toggle>${esc(label)}</button>
+        <div class="dr-select-menu">${opts}</div>
+        <input type="hidden" ${dataAttr} value="${esc(selected ?? "")}">
+      </div>`;
   }
 
   _drawerFactionForm(f) {
@@ -456,8 +489,8 @@ class DrinaxTrackerApp extends Application {
     return `
       <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
-      <div class="dr-field"><label>Category</label><select data-f-category>${this._factionOptionsHtml(f.category)}</select></div>
-      <div class="dr-field"><label>Disposition toward the party</label><select data-f-disposition>${this._dispositionOptionsHtml(f.disposition)}</select></div>
+      <div class="dr-field"><label>Category</label>${this._customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
+      <div class="dr-field"><label>Disposition toward the party</label>${this._customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
       <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
       <div class="dr-field"><label>Notes</label><textarea data-f-notes placeholder="Goals, assets, history with the party...">${esc(f.notes)}</textarea></div>
       <div class="dr-drawer-actions">
@@ -473,7 +506,7 @@ class DrinaxTrackerApp extends Application {
     return `
       <h3>${isEdit ? "Edit contact" : "Add contact"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-c-name value="${esc(c.name)}" placeholder="e.g. Baron Nakamura"></div>
-      <div class="dr-field"><label>Role</label><select data-c-role>${this._roleOptionsHtml(c.role)}</select></div>
+      <div class="dr-field"><label>Role</label>${this._customSelectHtml("data-c-role", CONTACT_ROLES.map(r => ({ value: r.id, label: r.label })), c.role)}</div>
       <div class="dr-field"><label>Allegiance Code (AC)</label><input type="text" list="dr-ac-list" data-c-ac value="${esc(c.ac)}" placeholder="e.g. Dr">
         <datalist id="dr-ac-list">${ALLEGIANCE_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
       </div>
@@ -495,7 +528,7 @@ class DrinaxTrackerApp extends Application {
       <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
       <div class="dr-field"><label>UWP</label><input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C"></div>
       <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
-      <div class="dr-field"><label>Controlling faction</label><select data-w-faction>${this._worldFactionOptionsHtml(w.faction)}</select></div>
+      <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.state.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
       <div class="dr-field"><label>Status</label><input type="text" list="dr-status-list" data-w-status value="${esc(w.status)}" placeholder="e.g. Contested">
         <datalist id="dr-status-list">${WORLD_STATUS_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
       </div>
