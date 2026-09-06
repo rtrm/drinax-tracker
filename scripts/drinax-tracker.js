@@ -85,6 +85,34 @@ function guessWorldUwp(doc) {
   return "";
 }
 
+function formatHex(hexX, hexY) {
+  return String(hexX).padStart(2, "0") + String(hexY).padStart(2, "0");
+}
+
+// Looks up a world by name on travellermap.com (CORS-enabled public API),
+// scoped to this campaign's milieu (1105). Since every world in this
+// campaign is in the Trojan Reach sector, results from that sector are
+// preferred exclusively when any exist, to avoid same-named worlds
+// elsewhere in the OTU; otherwise falls back to showing all matches.
+async function searchTravellerMap(query) {
+  try {
+    const res = await fetch(`https://travellermap.com/api/search?q=${encodeURIComponent(query)}&milieu=1105`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    const items = json?.Results?.Items || [];
+    let worlds = items
+      .filter(it => it.World)
+      .map(it => it.World)
+      .map(w => ({ name: w.Name, sector: w.Sector, hex: formatHex(w.HexX, w.HexY), uwp: w.Uwp }));
+    const reach = worlds.filter(w => w.sector === "Trojan Reach");
+    if (reach.length) worlds = reach;
+    return worlds.slice(0, 8);
+  } catch (err) {
+    console.warn("Drinax Tracker | Traveller Map lookup failed", err);
+    return [];
+  }
+}
+
 // Reads the campaign's in-fiction date from the mgt2e system's own Year/Day
 // world settings (game.settings.get("mgt2e", "currentYear"/"currentDay")) —
 // the same values its "/time" chat command reports, formatted the same way
@@ -350,6 +378,12 @@ class DrinaxTrackerApp extends Application {
       const editWorld = e.target.closest("[data-dr-edit-world]");
       if (editWorld) { this._openDrawer("world", editWorld.dataset.drEditWorld); return; }
 
+      const tmLookup = e.target.closest("[data-dr-tm-lookup]");
+      if (tmLookup) { this._lookupTravellerMap(); return; }
+
+      const tmResult = e.target.closest("[data-dr-tm-result]");
+      if (tmResult) { this._applyTravellerMapResult(Number(tmResult.dataset.drTmResult)); return; }
+
       const delFaction = e.target.closest("[data-dr-del-faction]");
       if (delFaction) { this._delete("faction", delFaction.dataset.drDelFaction); return; }
 
@@ -466,6 +500,7 @@ class DrinaxTrackerApp extends Application {
         if (nameField) nameField.value = doc.name;
         const uwp = guessWorldUwp(doc);
         if (uwp && uwpField) uwpField.value = uwp;
+        else await this._lookupTravellerMap();
       }
       return;
     }
@@ -486,6 +521,7 @@ class DrinaxTrackerApp extends Application {
       this._openDrawer("world", null);
       const nameField = this.root.querySelector("[data-w-name]");
       if (nameField) nameField.value = text;
+      await this._lookupTravellerMap();
     }
   }
 
@@ -727,7 +763,14 @@ class DrinaxTrackerApp extends Application {
     w = w || { name: "", uwp: "", location: "", faction: "", status: "", tags: "", notes: "" };
     return `
       <h3>${isEdit ? "Edit world" : "Add world"}</h3>
-      <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
+      <div class="dr-field">
+        <label>Name</label>
+        <div class="dr-inline-field">
+          <input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass">
+          <button type="button" class="dr-btn dr-btn-ghost" data-dr-tm-lookup>Look up</button>
+        </div>
+      </div>
+      <div class="dr-tm-results" data-dr-tm-results></div>
       <div class="dr-field"><label>UWP</label><input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C"></div>
       <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
       <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.state.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
@@ -875,6 +918,40 @@ class DrinaxTrackerApp extends Application {
     this._closeDrawer();
     this._renderContent();
     if (changes.length) await this._logChange("Contact", name, changes);
+  }
+
+  async _lookupTravellerMap() {
+    const nameField = this.root.querySelector("[data-w-name]");
+    const resultsEl = this.root.querySelector("[data-dr-tm-results]");
+    const query = nameField ? nameField.value.trim() : "";
+    if (!query) { ui.notifications.warn("Enter a world name first."); return; }
+    if (resultsEl) resultsEl.innerHTML = `<p class="dr-card-meta">Searching Traveller Map…</p>`;
+    const results = await searchTravellerMap(query);
+    this._tmResults = results;
+    if (!resultsEl) return;
+    if (results.length === 0) {
+      resultsEl.innerHTML = `<p class="dr-card-meta">No matches found on Traveller Map.</p>`;
+      return;
+    }
+    if (results.length === 1) {
+      this._applyTravellerMapResult(0);
+      return;
+    }
+    resultsEl.innerHTML = results.map((r, i) => `
+      <div class="dr-tm-result" data-dr-tm-result="${i}">
+        <b>${esc(r.name)}</b> &mdash; ${esc(r.sector)} ${esc(r.hex)} <span class="mono">${esc(r.uwp)}</span>
+      </div>`).join("");
+  }
+
+  _applyTravellerMapResult(idx) {
+    const r = this._tmResults?.[idx];
+    if (!r) return;
+    const uwpField = this.root.querySelector("[data-w-uwp]");
+    const locationField = this.root.querySelector("[data-w-location]");
+    const resultsEl = this.root.querySelector("[data-dr-tm-results]");
+    if (uwpField) uwpField.value = r.uwp;
+    if (locationField) locationField.value = `${r.sector} ${r.hex}`;
+    if (resultsEl) resultsEl.innerHTML = `<p class="dr-card-meta">Filled from Traveller Map: ${esc(r.name)}, ${esc(r.sector)} ${esc(r.hex)}.</p>`;
   }
 
   async _saveWorld(id) {

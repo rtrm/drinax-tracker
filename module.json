@@ -2,7 +2,7 @@
   "id": "drinax-tracker",
   "title": "Pirates of Drinax Tracker",
   "description": "A GM-only faction and world tracker for a Pirates of Drinax / Mongoose Traveller 2e campaign. Opens as an in-app window; data is saved to the world.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "compatibility": {
     "minimum": "11",
     "verified": "13"
