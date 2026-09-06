@@ -1246,6 +1246,31 @@ Hooks.on("updateSetting", (setting) => {
   }
 });
 
+// Keep an open tracker window in sync when the shared data changes from
+// elsewhere — a co-GM saving on their own session, or this same client's
+// own save. Without this, a window left open would silently work from an
+// increasingly stale copy, and its next save would overwrite whatever the
+// other GM had just saved (the whole data blob is written on every save,
+// not a merge). This doesn't touch the edit drawer, so an in-progress edit
+// there is preserved even if the background list refreshes under it.
+Hooks.on("updateSetting", (setting) => {
+  if (setting.key !== `${MODULE_ID}.data`) return;
+  const app = game.modules.get(MODULE_ID)?.app;
+  if (!app?.rendered) return;
+  const data = game.settings.get(MODULE_ID, "data");
+  if (!data) return;
+  app.state = {
+    factions: data.factions || [],
+    contacts: data.contacts || [],
+    worlds: data.worlds || [],
+    pri: data.pri ?? "",
+    log: data.log || []
+  };
+  const priInput = app.root?.querySelector("[data-dr-pri]");
+  if (priInput) priInput.value = app.state.pri === "" ? "" : app.state.pri;
+  app._renderContent();
+});
+
 // Best-effort button in the Journal Directory header. If Foundry's sidebar
 // markup doesn't match (core UI changes between versions), this silently
 // does nothing — use the macro below as the reliable way to open the tracker.
