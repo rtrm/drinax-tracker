@@ -232,17 +232,32 @@ class DrinaxTrackerApp extends Application {
 
   async _onDrop(event) {
     event.preventDefault();
+    if (this.currentTab !== "contacts" && this.currentTab !== "worlds") {
+      ui.notifications.info("Switch to the Contacts or Worlds tab to drop items here.");
+      return;
+    }
+    const raw = event.dataTransfer.getData("text/plain");
+    console.log("Drinax Tracker | drop payload:", raw);
     let data;
     try {
-      data = JSON.parse(event.dataTransfer.getData("text/plain"));
-    } catch (err) { return; }
-    if (!data?.uuid) return;
+      data = JSON.parse(raw);
+    } catch (err) {
+      ui.notifications.warn("Drinax Tracker: couldn't read what was dropped — see the browser console (F12) for the raw payload.");
+      return;
+    }
+    if (!data?.uuid) {
+      ui.notifications.warn("Drinax Tracker: dropped item has no linked document UUID — see the browser console (F12) for the raw payload.");
+      return;
+    }
     const doc = await fromUuid(data.uuid);
-    if (!doc) return;
+    if (!doc) {
+      ui.notifications.warn(`Drinax Tracker: couldn't resolve document ${data.uuid}.`);
+      return;
+    }
 
     if (this.currentTab === "contacts") {
       if (data.type !== "Actor") {
-        ui.notifications.warn("Drop an Actor onto the Contacts tab to create a contact.");
+        ui.notifications.warn(`Drop an Actor onto the Contacts tab to create a contact (got type "${data.type}").`);
         return;
       }
       this._pendingActorUuid = doc.uuid;
@@ -264,8 +279,6 @@ class DrinaxTrackerApp extends Application {
       if (nameField) nameField.value = doc.name;
       const uwp = guessWorldUwp(doc);
       if (uwp && uwpField) uwpField.value = uwp;
-    } else {
-      ui.notifications.info("Switch to the Contacts or Worlds tab to drop items here.");
     }
   }
 

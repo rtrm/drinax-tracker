@@ -1,6 +1,7 @@
 <div class="drinax-tracker-wrapper">
 <style>
   #drinax-root {
+    color-scheme: dark;
     --bg: #0b0f17;
     --panel: #141b28;
     --panel-alt: #1b2432;
@@ -295,6 +296,10 @@
   }
   #drinax-root .dr-field textarea { resize: vertical; min-height: 60px; }
   #drinax-root .dr-field select { padding: 12px 9px; }
+  #drinax-root .dr-field select option {
+    background: var(--panel-alt);
+    color: var(--text);
+  }
   #drinax-root .dr-field input:focus,
   #drinax-root .dr-field select:focus,
   #drinax-root .dr-field textarea:focus {
