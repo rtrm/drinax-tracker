@@ -3,10 +3,16 @@ const MODULE_ID = "drinax-tracker";
 const FACTION_CATEGORIES = [
   { id: "drinax", label: "Kingdom of Drinax", color: "var(--gold)" },
   { id: "imperium", label: "Third Imperium", color: "var(--imperium)" },
-  { id: "aslan", label: "Aslan Hierate Clan", color: "var(--aslan)" },
+  { id: "hierate", label: "Aslan Hierate", color: "var(--aslan)" },
+  { id: "aslan_clan", label: "Aslan Clan", color: "var(--aslan)" },
   { id: "pirate", label: "Pirate Group", color: "var(--pirate)" },
   { id: "other", label: "Other Faction", color: "var(--other)" },
 ];
+
+// Only these categories are singleton, nation-level polities that the
+// Pirates of Drinax "Standing" mechanic applies to — individual Aslan
+// clans and other factions don't track it.
+const STANDING_CATEGORIES = ["imperium", "hierate"];
 
 const DISPOSITIONS = [
   { id: "hostile", label: "Hostile", color: "var(--red)" },
@@ -29,7 +35,7 @@ const WORLD_STATUS_SUGGESTIONS = [
   "Aslan territory", "Contested", "Pirate haven", "Client world", "Annexed"
 ];
 
-function catInfo(id) { return FACTION_CATEGORIES.find(c => c.id === id) || FACTION_CATEGORIES[4]; }
+function catInfo(id) { return FACTION_CATEGORIES.find(c => c.id === id) || FACTION_CATEGORIES[FACTION_CATEGORIES.length - 1]; }
 function dispInfo(id) { return DISPOSITIONS.find(d => d.id === id) || DISPOSITIONS[2]; }
 function roleInfo(id) { return CONTACT_ROLES.find(r => r.id === id) || CONTACT_ROLES[0]; }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -82,11 +88,12 @@ function guessWorldUwp(doc) {
 function seedData() {
   return {
     factions: [
-      { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", standing: "", protected: true },
+      { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", protected: true },
       { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here.", standing: 0, protected: true },
-      { id: uid(), category: "aslan", name: "Aslan Hierate", disposition: "neutral", contact: "", notes: "Track territory ambitions and clan politics here.", standing: -5, protected: true },
-      { id: uid(), category: "pirate", name: "Example Pirate Band", disposition: "unfriendly", contact: "", notes: "Rename to a rival or allied pirate crew from your campaign.", standing: "", protected: false },
-      { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups.", standing: "", protected: false },
+      { id: uid(), category: "hierate", name: "The Aslan Hierate", disposition: "neutral", contact: "", notes: "The Hierate as a whole — track its overall relationship with Drinax here. Individual clans go under Aslan Clan.", standing: -5, protected: true },
+      { id: uid(), category: "aslan_clan", name: "Example Aslan Clan", disposition: "neutral", contact: "", notes: "Rename to an actual clan from your game and track its own territory ambitions here — add as many clans as you need.", protected: false },
+      { id: uid(), category: "pirate", name: "Example Pirate Band", disposition: "unfriendly", contact: "", notes: "Rename to a rival or allied pirate crew from your campaign.", protected: false },
+      { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups.", protected: false },
     ],
     contacts: [
       { id: uid(), role: "ally", name: "Example Ally Contact", ac: "Dr", soc: 9, notes: "Rename to an NPC ally, informant, or associate from your campaign.", actorUuid: null },
@@ -246,6 +253,13 @@ class DrinaxTrackerApp extends Application {
         btn.textContent = selectOpt.textContent;
         wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === selectOpt));
         wrapper.querySelector(".dr-select-menu").classList.remove("open");
+
+        if (hidden.hasAttribute("data-f-category")) {
+          const standingWrapper = this.root.querySelector("[data-f-standing-wrapper]");
+          if (standingWrapper) {
+            standingWrapper.style.display = STANDING_CATEGORIES.includes(hidden.value) ? "" : "none";
+          }
+        }
         return;
       }
 
@@ -366,7 +380,7 @@ class DrinaxTrackerApp extends Application {
   _factionCard(f) {
     const cat = catInfo(f.category);
     const disp = dispInfo(f.disposition);
-    const hasStanding = typeof f.standing === "number" && Number.isFinite(f.standing);
+    const hasStanding = STANDING_CATEGORIES.includes(f.category) && typeof f.standing === "number" && Number.isFinite(f.standing);
     const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
     return `
       <div class="dr-card" style="--cat-color:${cat.color}">
@@ -497,13 +511,14 @@ class DrinaxTrackerApp extends Application {
   _drawerFactionForm(f) {
     const isEdit = !!f;
     f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "", standing: "", protected: false };
+    const showStanding = STANDING_CATEGORIES.includes(f.category);
     return `
       <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
       <div class="dr-field"><label>Category</label>${this._customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
       <div class="dr-field"><label>Disposition toward the party</label>${this._customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
       <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
-      <div class="dr-field"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
+      <div class="dr-field" data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
       <div class="dr-field"><label>Notes</label><textarea data-f-notes placeholder="Goals, assets, history with the party...">${esc(f.notes)}</textarea></div>
       <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
       <div class="dr-drawer-actions">
