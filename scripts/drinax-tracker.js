@@ -35,9 +35,23 @@ const WORLD_STATUS_SUGGESTIONS = [
   "Aslan territory", "Contested", "Pirate haven", "Client world", "Annexed"
 ];
 
+// Pirates of Drinax world Relationship track, best to worst, with its
+// associated Fence/Recruitment/Risk of Arrest/Risk of Spies/Protection
+// effects (per the campaign's rules table). "—" means not available.
+const WORLD_RELATIONSHIPS = [
+  { id: "haven", label: "Haven", color: "var(--gold)", fence: "30%", recruitment: "3+", riskArrest: "—", riskSpies: "12+", protection: "3+" },
+  { id: "friendly", label: "Friendly", color: "var(--teal)", fence: "25%", recruitment: "5+", riskArrest: "—", riskSpies: "12+", protection: "7+" },
+  { id: "tolerant", label: "Tolerant", color: "var(--slate)", fence: "20%", recruitment: "7+", riskArrest: "12+", riskSpies: "10+", protection: "11+" },
+  { id: "neutral", label: "Neutral", color: "var(--slate)", fence: "10%", recruitment: "9+", riskArrest: "12+", riskSpies: "10+", protection: "—" },
+  { id: "suspicious", label: "Suspicious", color: "var(--orange)", fence: "10%", recruitment: "11+", riskArrest: "10+", riskSpies: "8+", protection: "—" },
+  { id: "unfriendly", label: "Unfriendly", color: "var(--orange)", fence: "—", recruitment: "12+", riskArrest: "10+", riskSpies: "8+", protection: "—" },
+  { id: "hostile", label: "Hostile", color: "var(--red)", fence: "—", recruitment: "—", riskArrest: "2+", riskSpies: "2+", protection: "—" },
+];
+
 function catInfo(id) { return FACTION_CATEGORIES.find(c => c.id === id) || FACTION_CATEGORIES[FACTION_CATEGORIES.length - 1]; }
 function dispInfo(id) { return DISPOSITIONS.find(d => d.id === id) || DISPOSITIONS[2]; }
 function roleInfo(id) { return CONTACT_ROLES.find(r => r.id === id) || CONTACT_ROLES[0]; }
+function relInfo(id) { return WORLD_RELATIONSHIPS.find(r => r.id === id) || WORLD_RELATIONSHIPS[3]; }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function esc(s) {
   return (s || "").replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
@@ -111,6 +125,60 @@ async function searchTravellerMap(query) {
     console.warn("Drinax Tracker | Traveller Map lookup failed", err);
     return [];
   }
+}
+
+// Fetches the WorldAllegiance code (e.g. "ImDd", "AsT9", "NaHu") for a
+// specific world from travellermap.com's Credits API, used to derive a
+// world's controlling faction. Best-effort: returns "" on any failure.
+async function fetchWorldAllegiance(sector, hex) {
+  try {
+    const res = await fetch(`https://travellermap.com/api/credits?sector=${encodeURIComponent(sector)}&hex=${encodeURIComponent(hex)}&milieu=M1105`);
+    if (!res.ok) return "";
+    const json = await res.json();
+    return json?.WorldAllegiance || "";
+  } catch (err) {
+    console.warn("Drinax Tracker | Traveller Map allegiance lookup failed", err);
+    return "";
+  }
+}
+
+// Extended-hex digit per Traveller UWP convention: 0-9, then A=10, B=11, ...
+function parseHexDigit(ch) {
+  if (!ch) return null;
+  if (/[0-9]/.test(ch)) return Number(ch);
+  const n = ch.toUpperCase().charCodeAt(0) - 55; // 'A' (65) -> 10
+  return Number.isFinite(n) && n >= 10 ? n : null;
+}
+
+// A UWP is Starport + 6 digits (Size, Atmosphere, Hydrographics,
+// Population, Government, Law Level) + "-" + Tech Level, e.g. "A788899-C".
+// Law Level is therefore the 7th character once the hyphen is removed.
+function uwpLawLevel(uwp) {
+  if (!uwp) return null;
+  const clean = uwp.replace(/[^A-Za-z0-9]/g, "");
+  if (clean.length < 7) return null;
+  return parseHexDigit(clean[6]);
+}
+
+function lawLevelToRelationship(law) {
+  if (law <= 2) return "tolerant";
+  if (law <= 5) return "neutral";
+  if (law <= 9) return "suspicious";
+  if (law <= 11) return "unfriendly";
+  return "hostile";
+}
+
+// Default Relationship for a newly-added world: Drinax and Theev are fixed
+// narrative starting points; Aslan Hierate worlds start Unfriendly per the
+// campaign; everything else derives from the UWP's Law Level.
+function defaultWorldRelationship({ name, factionCategory, uwp }) {
+  const n = (name || "").trim().toLowerCase();
+  if (n === "drinax") return "haven";
+  if (n === "theev") return "friendly";
+  if (factionCategory === "hierate") return "unfriendly";
+  const law = uwpLawLevel(uwp);
+  if (law === null) return "neutral";
+  return lawLevelToRelationship(law);
 }
 
 // Reads the campaign's in-fiction date from the mgt2e system's own Year/Day
@@ -226,9 +294,10 @@ async function checkStandingDriftAndPersist() {
 }
 
 function seedData() {
+  const drinaxFactionId = uid();
   return {
     factions: [
-      { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", protected: true },
+      { id: drinaxFactionId, category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", protected: true },
       { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here.", standing: 0, standingBaseline: 0, standingUpdatedDay: null, protected: true },
       { id: uid(), category: "hierate", name: "The Aslan Hierate", disposition: "neutral", contact: "", notes: "The Hierate as a whole — track its overall relationship with Drinax here. Individual clans go under Aslan Clan.", standing: -5, standingBaseline: -5, standingUpdatedDay: null, protected: true },
       { id: uid(), category: "aslan_clan", name: "Example Aslan Clan", disposition: "neutral", contact: "", notes: "Rename to an actual clan from your game and track its own territory ambitions here — add as many clans as you need.", protected: false },
@@ -239,7 +308,8 @@ function seedData() {
       { id: uid(), role: "ally", name: "Example Ally Contact", ac: "Dr", soc: 9, notes: "Rename to an NPC ally, informant, or associate from your campaign.", actorUuid: null },
     ],
     worlds: [
-      { id: uid(), name: "Drinax", uwp: "", location: "", faction: null, status: "Under Drinax control", tags: "homeworld", notes: "The throne world itself — fill in UWP and current condition.", sourceUuid: null },
+      { id: uid(), name: "Drinax", uwp: "", location: "", faction: drinaxFactionId, status: "Under Drinax control", tags: "homeworld", notes: "The throne world itself — fill in UWP and current condition.", sourceUuid: null, relationship: "haven" },
+      { id: uid(), name: "Theev", uwp: "", location: "", faction: null, status: "", tags: "", notes: "", sourceUuid: null, relationship: "friendly" },
     ],
     pri: "",
     log: []
@@ -283,6 +353,15 @@ class DrinaxTrackerApp extends Application {
     let migrated = false;
     (data.factions || []).forEach(f => {
       if (f.category === "aslan") { f.category = "hierate"; migrated = true; }
+    });
+    // One-time migration: give any world saved before the Relationship track
+    // existed a sensible starting value instead of leaving it blank.
+    (data.worlds || []).forEach(w => {
+      if (!w.relationship) {
+        const faction = (data.factions || []).find(f => f.id === w.faction);
+        w.relationship = defaultWorldRelationship({ name: w.name, factionCategory: faction?.category, uwp: w.uwp });
+        migrated = true;
+      }
     });
     const drifted = runStandingDrift(data);
     this.state = {
@@ -436,13 +515,17 @@ class DrinaxTrackerApp extends Application {
             standingWrapper.style.display = STANDING_CATEGORIES.includes(hidden.value) ? "" : "none";
           }
         }
+        if (hidden.hasAttribute("data-w-faction")) {
+          this._recomputeWorldRelationshipDefault();
+        }
         return;
       }
 
       root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
     });
 
-    // Delegated input for live Asset Value recalculation as SOC changes
+    // Delegated input for live Asset Value recalculation as SOC changes, and
+    // live Relationship-default recalculation as a world's UWP is typed.
     root.addEventListener("input", (e) => {
       if (e.target.matches("[data-c-soc]")) {
         const avField = this.root.querySelector("[data-c-av]");
@@ -451,10 +534,15 @@ class DrinaxTrackerApp extends Application {
           avField.value = av === "" ? "" : av;
         }
       }
+      if (e.target.matches("[data-w-uwp]")) {
+        this._recomputeWorldRelationshipDefault();
+      }
     });
 
     // Auto-lookup on Traveller Map once a world Name is entered, if UWP is
-    // still blank. Uses focusout (bubbles), since blur does not.
+    // still blank. Uses focusout (bubbles), since blur does not. Also
+    // recomputes the Relationship default, since Drinax/Theev are named
+    // special cases that apply even when UWP is already known.
     root.addEventListener("focusout", (e) => {
       if (e.target.matches("[data-w-name]")) {
         const nameField = e.target;
@@ -462,6 +550,7 @@ class DrinaxTrackerApp extends Application {
         if (nameField.value.trim() && uwpField && !uwpField.value.trim()) {
           this._lookupTravellerMap();
         }
+        this._recomputeWorldRelationshipDefault();
       }
     });
 
@@ -511,8 +600,12 @@ class DrinaxTrackerApp extends Application {
         const uwpField = this.root.querySelector("[data-w-uwp]");
         if (nameField) nameField.value = doc.name;
         const uwp = guessWorldUwp(doc);
-        if (uwp && uwpField) uwpField.value = uwp;
-        else await this._lookupTravellerMap();
+        if (uwp && uwpField) {
+          uwpField.value = uwp;
+          this._recomputeWorldRelationshipDefault();
+        } else {
+          await this._lookupTravellerMap();
+        }
       }
       return;
     }
@@ -613,6 +706,7 @@ class DrinaxTrackerApp extends Application {
   _worldCard(w) {
     const f = w.faction ? this.state.factions.find(x => x.id === w.faction) : null;
     const cat = f ? catInfo(f.category) : null;
+    const rel = relInfo(w.relationship);
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     return `
       <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"}">
@@ -622,6 +716,8 @@ class DrinaxTrackerApp extends Application {
         </div>
         ${w.location ? `<div class="dr-card-meta">${esc(w.location)}</div>` : ""}
         ${f ? `<span class="dr-badge" style="color:${cat.color}">${esc(f.name)}</span>` : `<span class="dr-badge">Unclaimed</span>`}
+        <span class="dr-badge" style="color:${rel.color}">${esc(rel.label)}</span>
+        <div class="dr-card-meta">${this._relationshipEffectsText(w.relationship)}</div>
         ${w.status ? `<div class="dr-card-meta">Status: ${esc(w.status)}</div>` : ""}
         ${tags.length ? `<div class="dr-card-tags">${tags.map(t => `<span class="dr-tag-pill">${esc(t)}</span>`).join("")}</div>` : ""}
         ${w.notes ? `<p class="dr-card-notes">${esc(w.notes)}</p>` : ""}
@@ -770,9 +866,14 @@ class DrinaxTrackerApp extends Application {
       </div>`;
   }
 
+  _relationshipEffectsText(id) {
+    const r = relInfo(id);
+    return `Fence ${r.fence} &middot; Recruit ${r.recruitment} &middot; Arrest ${r.riskArrest} &middot; Spies ${r.riskSpies} &middot; Protect ${r.protection}`;
+  }
+
   _drawerWorldForm(w) {
     const isEdit = !!w;
-    w = w || { name: "", uwp: "", location: "", faction: "", status: "", tags: "", notes: "" };
+    w = w || { name: "", uwp: "", location: "", faction: "", status: "", tags: "", notes: "", relationship: "neutral" };
     return `
       <h3>${isEdit ? "Edit world" : "Add world"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
@@ -786,6 +887,11 @@ class DrinaxTrackerApp extends Application {
       <div class="dr-tm-results" data-dr-tm-results></div>
       <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
       <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.state.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
+      <div class="dr-field">
+        <label>Relationship</label>
+        ${this._customSelectHtml("data-w-relationship", WORLD_RELATIONSHIPS.map(r => ({ value: r.id, label: r.label })), w.relationship || "neutral")}
+      </div>
+      <p class="dr-card-meta" data-dr-relationship-effects>${this._relationshipEffectsText(w.relationship || "neutral")}</p>
       <div class="dr-field"><label>Status</label><input type="text" list="dr-status-list" data-w-status value="${esc(w.status)}" placeholder="e.g. Contested">
         <datalist id="dr-status-list">${WORLD_STATUS_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
       </div>
@@ -810,6 +916,9 @@ class DrinaxTrackerApp extends Application {
     } else {
       const w = id ? this.state.worlds.find(x => x.id === id) : null;
       content.innerHTML = this._drawerWorldForm(w);
+      // Editing an existing world saved before a UWP was known — look it up
+      // immediately rather than waiting for the GM to touch the Name field.
+      if (w && w.name && !w.uwp) this._lookupTravellerMap();
     }
     this.root.querySelector("[data-dr-overlay]").classList.add("open");
     this.root.querySelector("[data-dr-drawer]").classList.add("open");
@@ -946,7 +1055,7 @@ class DrinaxTrackerApp extends Application {
       return;
     }
     if (results.length === 1) {
-      this._applyTravellerMapResult(0);
+      await this._applyTravellerMapResult(0);
       return;
     }
     resultsEl.innerHTML = results.map((r, i) => `
@@ -955,7 +1064,38 @@ class DrinaxTrackerApp extends Application {
       </div>`).join("");
   }
 
-  _applyTravellerMapResult(idx) {
+  // Sets a custom-dropdown field's value/label from code (not a user click) —
+  // used when Traveller Map data fills in Controlling faction or Relationship.
+  _setCustomSelectValue(dataAttr, value) {
+    const hidden = this.root.querySelector(`[${dataAttr}]`);
+    if (!hidden) return;
+    const wrapper = hidden.closest(".dr-select");
+    if (!wrapper) return;
+    const opt = wrapper.querySelector(`[data-dr-select-value="${CSS.escape(value)}"]`);
+    if (!opt) return;
+    hidden.value = value;
+    const btn = wrapper.querySelector("[data-dr-select-toggle]");
+    if (btn) btn.textContent = opt.textContent;
+    wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === opt));
+  }
+
+  // Recomputes the suggested Relationship for a world that hasn't been saved
+  // yet (i.e. the drawer is in "Add" mode) — Save button carries no id in
+  // that case. Never touches an existing world's already-set Relationship.
+  _recomputeWorldRelationshipDefault() {
+    const saveBtn = this.root.querySelector("[data-dr-save-world]");
+    if (!saveBtn || saveBtn.dataset.drSaveWorld) return;
+    const name = this.root.querySelector("[data-w-name]")?.value || "";
+    const uwp = this.root.querySelector("[data-w-uwp]")?.value || "";
+    const factionId = this.root.querySelector("[data-w-faction]")?.value || "";
+    const faction = this.state.factions.find(f => f.id === factionId);
+    const relationship = defaultWorldRelationship({ name, factionCategory: faction?.category, uwp });
+    this._setCustomSelectValue("data-w-relationship", relationship);
+    const effectsEl = this.root.querySelector("[data-dr-relationship-effects]");
+    if (effectsEl) effectsEl.innerHTML = this._relationshipEffectsText(relationship);
+  }
+
+  async _applyTravellerMapResult(idx) {
     const r = this._tmResults?.[idx];
     if (!r) return;
     const uwpField = this.root.querySelector("[data-w-uwp]");
@@ -964,6 +1104,29 @@ class DrinaxTrackerApp extends Application {
     if (uwpField) uwpField.value = r.uwp;
     if (locationField) locationField.value = `${r.sector} ${r.hex}`;
     if (resultsEl) resultsEl.innerHTML = `<p class="dr-card-meta">Filled from Traveller Map: ${esc(r.name)}, ${esc(r.sector)} ${esc(r.hex)}.</p>`;
+
+    // Derive Controlling faction: Drinax itself is a named special case;
+    // otherwise Imperium/Aslan Hierate territory is inferred from the
+    // world's Allegiance code (Aslan codes carry a clan sub-code after
+    // "As", e.g. "AsT9" — we don't track individual clans here, so any
+    // "As*" code maps to the single Aslan Hierate faction record).
+    const factionField = this.root.querySelector("[data-w-faction]");
+    if (factionField && !factionField.value) {
+      let targetCategory = null;
+      if (r.name.trim().toLowerCase() === "drinax") {
+        targetCategory = "drinax";
+      } else {
+        const allegiance = await fetchWorldAllegiance(r.sector, r.hex);
+        if (allegiance.startsWith("As")) targetCategory = "hierate";
+        else if (allegiance.startsWith("Im")) targetCategory = "imperium";
+      }
+      if (targetCategory) {
+        const faction = this.state.factions.find(f => f.category === targetCategory);
+        if (faction) this._setCustomSelectValue("data-w-faction", faction.id);
+      }
+    }
+
+    this._recomputeWorldRelationshipDefault();
   }
 
   async _saveWorld(id) {
@@ -975,6 +1138,7 @@ class DrinaxTrackerApp extends Application {
       uwp: root.querySelector("[data-w-uwp]").value.trim(),
       location: root.querySelector("[data-w-location]").value.trim(),
       faction: root.querySelector("[data-w-faction]").value || null,
+      relationship: root.querySelector("[data-w-relationship]").value || "neutral",
       status: root.querySelector("[data-w-status]").value.trim(),
       tags: root.querySelector("[data-w-tags]").value.trim(),
       notes: root.querySelector("[data-w-notes]").value.trim(),
