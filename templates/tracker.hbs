@@ -372,7 +372,8 @@
     color: var(--text-muted);
   }
   #drinax-root .dr-pri-row input {
-    width: 70px;
+    width: 55px;
+    text-align: center;
     background: var(--panel);
     border: 1px solid var(--border);
     color: var(--gold);
@@ -383,6 +384,30 @@
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   }
   #drinax-root .dr-pri-row input:focus { outline: none; border-color: var(--gold); }
+  #drinax-root .dr-pri-btn {
+    width: 22px;
+    height: 22px;
+    line-height: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0;
+  }
+  #drinax-root .dr-pri-btn:hover { color: var(--gold); border-color: var(--gold); }
+
+  #drinax-root .dr-field-checkbox label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  #drinax-root .dr-field-checkbox input { width: auto; }
 </style>
 
 <div id="drinax-root">
@@ -392,7 +417,9 @@
     <div class="dr-summary" data-dr-summary></div>
     <div class="dr-pri-row">
       <label for="dr-pri-input">Piracy Response Indicator (PRI)</label>
+      <button type="button" class="dr-pri-btn" data-dr-pri-dec>&minus;</button>
       <input type="number" id="dr-pri-input" data-dr-pri>
+      <button type="button" class="dr-pri-btn" data-dr-pri-inc>+</button>
     </div>
   </div>
 

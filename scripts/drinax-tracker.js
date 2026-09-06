@@ -82,11 +82,11 @@ function guessWorldUwp(doc) {
 function seedData() {
   return {
     factions: [
-      { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details." },
-      { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here." },
-      { id: uid(), category: "aslan", name: "Example Aslan Clan", disposition: "neutral", contact: "", notes: "Rename to the actual clan(s) from your game and track their territory ambitions here." },
-      { id: uid(), category: "pirate", name: "Example Pirate Band", disposition: "unfriendly", contact: "", notes: "Rename to a rival or allied pirate crew from your campaign." },
-      { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups." },
+      { id: uid(), category: "drinax", name: "The Kingdom of Drinax", disposition: "allied", contact: "", notes: "Edit this entry with your campaign’s current King and court details.", standing: "", protected: true },
+      { id: uid(), category: "imperium", name: "Third Imperium", disposition: "neutral", contact: "", notes: "Local Imperial presence bordering the Reach — note down the relevant subsector fleet or consulate here.", standing: 0, protected: true },
+      { id: uid(), category: "aslan", name: "Aslan Hierate", disposition: "neutral", contact: "", notes: "Track territory ambitions and clan politics here.", standing: -5, protected: true },
+      { id: uid(), category: "pirate", name: "Example Pirate Band", disposition: "unfriendly", contact: "", notes: "Rename to a rival or allied pirate crew from your campaign.", standing: "", protected: false },
+      { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups.", standing: "", protected: false },
     ],
     contacts: [
       { id: uid(), role: "ally", name: "Example Ally Contact", ac: "Dr", soc: 9, notes: "Rename to an NPC ally, informant, or associate from your campaign.", actorUuid: null },
@@ -167,6 +167,14 @@ class DrinaxTrackerApp extends Application {
       this.state.pri = priInput.value === "" ? "" : Number(priInput.value);
       await this._saveData();
     });
+    const bumpPri = async (delta) => {
+      const current = priInput.value === "" ? 0 : Number(priInput.value);
+      this.state.pri = current + delta;
+      priInput.value = this.state.pri;
+      await this._saveData();
+    };
+    root.querySelector("[data-dr-pri-inc]").addEventListener("click", () => bumpPri(1));
+    root.querySelector("[data-dr-pri-dec]").addEventListener("click", () => bumpPri(-1));
 
     root.addEventListener("dragover", (e) => e.preventDefault());
     root.addEventListener("drop", (e) => this._onDrop(e));
@@ -358,16 +366,19 @@ class DrinaxTrackerApp extends Application {
   _factionCard(f) {
     const cat = catInfo(f.category);
     const disp = dispInfo(f.disposition);
+    const hasStanding = typeof f.standing === "number" && Number.isFinite(f.standing);
+    const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
     return `
       <div class="dr-card" style="--cat-color:${cat.color}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(f.name)}</p></div>
         <span class="dr-card-tag">${esc(cat.label)}</span>
         <span class="dr-badge"><span class="dr-dot" style="--dot-color:${disp.color}"></span>${esc(disp.label)}</span>
+        ${hasStanding ? `<div class="dr-card-meta">Standing: ${standingLabel}</div>` : ""}
         ${f.contact ? `<div class="dr-card-meta">Contact: ${esc(f.contact)}</div>` : ""}
         ${f.notes ? `<p class="dr-card-notes">${esc(f.notes)}</p>` : ""}
         <div class="dr-card-actions">
           <button type="button" class="dr-icon-btn" data-dr-edit-faction="${f.id}">Edit</button>
-          <button type="button" class="dr-icon-btn danger" data-dr-del-faction="${f.id}">Delete</button>
+          ${f.protected ? "" : `<button type="button" class="dr-icon-btn danger" data-dr-del-faction="${f.id}">Delete</button>`}
         </div>
       </div>`;
   }
@@ -485,14 +496,16 @@ class DrinaxTrackerApp extends Application {
 
   _drawerFactionForm(f) {
     const isEdit = !!f;
-    f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "" };
+    f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "", standing: "", protected: false };
     return `
       <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
       <div class="dr-field"><label>Category</label>${this._customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
       <div class="dr-field"><label>Disposition toward the party</label>${this._customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
       <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
+      <div class="dr-field"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
       <div class="dr-field"><label>Notes</label><textarea data-f-notes placeholder="Goals, assets, history with the party...">${esc(f.notes)}</textarea></div>
+      <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
       <div class="dr-drawer-actions">
         <button type="button" class="dr-btn" data-dr-save-faction="${isEdit ? f.id : ""}">Save</button>
         <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
@@ -569,12 +582,15 @@ class DrinaxTrackerApp extends Application {
     const root = this.root;
     const name = root.querySelector("[data-f-name]").value.trim();
     if (!name) { ui.notifications.warn("Please enter a faction name."); return; }
+    const standingRaw = root.querySelector("[data-f-standing]").value.trim();
     const data = {
       name,
       category: root.querySelector("[data-f-category]").value,
       disposition: root.querySelector("[data-f-disposition]").value,
       contact: root.querySelector("[data-f-contact]").value.trim(),
+      standing: standingRaw === "" ? "" : Number(standingRaw),
       notes: root.querySelector("[data-f-notes]").value.trim(),
+      protected: root.querySelector("[data-f-protected]").checked,
     };
     if (id) {
       const idx = this.state.factions.findIndex(x => x.id === id);
