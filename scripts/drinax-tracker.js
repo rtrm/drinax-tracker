@@ -85,6 +85,22 @@ function guessWorldUwp(doc) {
   return "";
 }
 
+// Reads the campaign's in-fiction date from the mgt2e system's own Year/Day
+// world settings (game.settings.get("mgt2e", "currentYear"/"currentDay")) —
+// the same values its "/time" chat command reports, formatted the same way
+// (YYYY-DDD) — so log entries carry the in-fiction date too.
+function getCampaignDate() {
+  try {
+    const year = game.settings.get("mgt2e", "currentYear");
+    let day = String(game.settings.get("mgt2e", "currentDay"));
+    if (day.length === 1) day = "00" + day;
+    else if (day.length === 2) day = "0" + day;
+    return `${year}-${day}`;
+  } catch (err) {
+    return "";
+  }
+}
+
 function seedData() {
   return {
     factions: [
@@ -101,7 +117,8 @@ function seedData() {
     worlds: [
       { id: uid(), name: "Drinax", uwp: "", location: "", faction: null, status: "Under Drinax control", tags: "homeworld", notes: "The throne world itself — fill in UWP and current condition.", sourceUuid: null },
     ],
-    pri: ""
+    pri: "",
+    log: []
   };
 }
 
@@ -120,7 +137,7 @@ class DrinaxTrackerApp extends Application {
 
   constructor(options = {}) {
     super(options);
-    this.state = { factions: [], contacts: [], worlds: [], pri: "" };
+    this.state = { factions: [], contacts: [], worlds: [], pri: "", log: [] };
     this.currentTab = "factions";
     this.activeFilter = "all";
     this._pendingActorUuid = null;
@@ -135,12 +152,22 @@ class DrinaxTrackerApp extends Application {
       data = seedData();
       await game.settings.set(MODULE_ID, "data", data);
     }
+    // One-time migration: pre-1.3.1 data used a single "aslan" category for
+    // both the Hierate and individual clans; that was later split into
+    // "hierate" and "aslan_clan". Treat any leftover "aslan" faction as the
+    // Hierate, since that was the only entry ever seeded under the old id.
+    let migrated = false;
+    (data.factions || []).forEach(f => {
+      if (f.category === "aslan") { f.category = "hierate"; migrated = true; }
+    });
     this.state = {
       factions: data.factions || [],
       contacts: data.contacts || [],
       worlds: data.worlds || [],
-      pri: data.pri ?? ""
+      pri: data.pri ?? "",
+      log: data.log || []
     };
+    if (migrated) await this._saveData();
   }
 
   async _saveData() {
@@ -158,27 +185,32 @@ class DrinaxTrackerApp extends Application {
         this.activeFilter = "all";
         root.querySelectorAll("[data-dr-tab]").forEach(b => b.classList.toggle("active", b === btn));
         root.querySelector("[data-dr-search]").value = "";
+        root.querySelector("[data-dr-add]").style.display = this.currentTab === "log" ? "none" : "";
         this._renderContent();
       });
     });
 
     root.querySelector("[data-dr-search]").addEventListener("input", () => this._renderContent());
     root.querySelector("[data-dr-add]").addEventListener("click", () => this._openDrawer());
-    root.querySelector("[data-dr-reset]").addEventListener("click", () => this._resetConfirm());
     root.querySelector("[data-dr-overlay]").addEventListener("click", (e) => {
       if (e.target === e.currentTarget) this._closeDrawer();
     });
 
     const priInput = root.querySelector("[data-dr-pri]");
     priInput.addEventListener("change", async () => {
-      this.state.pri = priInput.value === "" ? "" : Number(priInput.value);
+      const prev = this.state.pri;
+      const next = priInput.value === "" ? "" : Number(priInput.value);
+      this.state.pri = next;
       await this._saveData();
+      if (prev !== next) await this._logChange("PRI", "Piracy Response Indicator", [{ field: "PRI", from: prev === "" ? "—" : prev, to: next === "" ? "—" : next }]);
     });
     const bumpPri = async (delta) => {
-      const current = priInput.value === "" ? 0 : Number(priInput.value);
-      this.state.pri = current + delta;
-      priInput.value = this.state.pri;
+      const prev = priInput.value === "" ? 0 : Number(priInput.value);
+      const next = prev + delta;
+      this.state.pri = next;
+      priInput.value = next;
       await this._saveData();
+      await this._logChange("PRI", "Piracy Response Indicator", [{ field: "PRI", from: prev, to: next }]);
     };
     root.querySelector("[data-dr-pri-inc]").addEventListener("click", () => bumpPri(1));
     root.querySelector("[data-dr-pri-dec]").addEventListener("click", () => bumpPri(-1));
@@ -196,8 +228,21 @@ class DrinaxTrackerApp extends Application {
 
     // Delegated clicks for dynamically generated card/filter/drawer content
     root.addEventListener("click", (e) => {
-      const filterBtn = e.target.closest("[data-dr-filter]");
-      if (filterBtn) { this.activeFilter = filterBtn.dataset.drFilter; this._renderContent(); return; }
+      const filterToggle = e.target.closest("[data-dr-filter-toggle]");
+      if (filterToggle) {
+        const menu = filterToggle.nextElementSibling;
+        const wasOpen = menu.classList.contains("open");
+        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+        if (!wasOpen) menu.classList.add("open");
+        return;
+      }
+
+      const filterOpt = e.target.closest("[data-dr-filter-value]");
+      if (filterOpt) {
+        this.activeFilter = filterOpt.dataset.drFilterValue;
+        this._renderContent();
+        return;
+      }
 
       const editFaction = e.target.closest("[data-dr-edit-faction]");
       if (editFaction) { this._openDrawer("faction", editFaction.dataset.drEditFaction); return; }
@@ -358,20 +403,24 @@ class DrinaxTrackerApp extends Application {
     el.innerHTML = chips.join("");
   }
 
+  _filterSelectHtml(items, selected) {
+    const selectedItem = items.find(it => it.value === selected) || items[0];
+    const opts = items.map(it => `<div class="dr-select-opt ${it.value === selected ? "selected" : ""}" data-dr-filter-value="${esc(it.value)}">${esc(it.label)}</div>`).join("");
+    return `
+      <div class="dr-select dr-filter-select">
+        <button type="button" class="dr-select-btn" data-dr-filter-toggle>${esc(selectedItem.label)}</button>
+        <div class="dr-select-menu">${opts}</div>
+      </div>`;
+  }
+
   _renderFilters() {
     const el = this.root.querySelector("[data-dr-filters]");
     if (this.currentTab === "factions") {
-      let html = `<button type="button" class="dr-filter-chip ${this.activeFilter === "all" ? "active" : ""}" data-dr-filter="all">All</button>`;
-      FACTION_CATEGORIES.forEach(c => {
-        html += `<button type="button" class="dr-filter-chip ${this.activeFilter === c.id ? "active" : ""}" style="color:${c.color}" data-dr-filter="${c.id}">${esc(c.label)}</button>`;
-      });
-      el.innerHTML = html;
+      const items = [{ value: "all", label: "All Categories" }, ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label }))];
+      el.innerHTML = this._filterSelectHtml(items, this.activeFilter);
     } else if (this.currentTab === "contacts") {
-      let html = `<button type="button" class="dr-filter-chip ${this.activeFilter === "all" ? "active" : ""}" data-dr-filter="all">All</button>`;
-      CONTACT_ROLES.forEach(r => {
-        html += `<button type="button" class="dr-filter-chip ${this.activeFilter === r.id ? "active" : ""}" style="color:${r.color}" data-dr-filter="${r.id}">${esc(r.label)}</button>`;
-      });
-      el.innerHTML = html;
+      const items = [{ value: "all", label: "All Roles" }, ...CONTACT_ROLES.map(r => ({ value: r.id, label: r.label }))];
+      el.innerHTML = this._filterSelectHtml(items, this.activeFilter);
     } else {
       el.innerHTML = "";
     }
@@ -439,6 +488,19 @@ class DrinaxTrackerApp extends Application {
       </div>`;
   }
 
+  _logEntryCard(entry) {
+    const realTime = new Date(entry.realTime).toLocaleString();
+    const changesHtml = entry.changes.map(c => `<div class="dr-card-meta">${esc(c.field)}: ${esc(String(c.from))} &rarr; ${esc(String(c.to))}</div>`).join("");
+    return `
+      <div class="dr-card">
+        <div class="dr-card-top"><p class="dr-card-name">${esc(entry.entityName)}</p></div>
+        <span class="dr-card-tag">${esc(entry.entityType)}</span>
+        ${changesHtml}
+        ${entry.reason ? `<p class="dr-card-notes">Reason: ${esc(entry.reason)}</p>` : ""}
+        <div class="dr-card-meta">${entry.gameDate ? `Game date ${esc(entry.gameDate)} &middot; ` : ""}${esc(realTime)}</div>
+      </div>`;
+  }
+
   _renderContent() {
     this._renderSummary();
     this._renderFilters();
@@ -474,7 +536,7 @@ class DrinaxTrackerApp extends Application {
         empty.style.display = "none";
         grid.innerHTML = list.map(c => this._contactCard(c)).join("");
       }
-    } else {
+    } else if (this.currentTab === "worlds") {
       let list = this.state.worlds.slice();
       if (q) list = list.filter(w => (w.name + " " + (w.notes || "") + " " + (w.status || "") + " " + (w.tags || "")).toLowerCase().includes(q));
       list.sort((a, b) => a.name.localeCompare(b.name));
@@ -487,6 +549,17 @@ class DrinaxTrackerApp extends Application {
       } else {
         empty.style.display = "none";
         grid.innerHTML = list.map(w => this._worldCard(w)).join("");
+      }
+    } else {
+      let list = (this.state.log || []).slice();
+      if (q) list = list.filter(entry => (entry.entityName + " " + (entry.reason || "") + " " + entry.changes.map(c => c.field).join(" ")).toLowerCase().includes(q));
+      if (list.length === 0) {
+        grid.innerHTML = "";
+        empty.style.display = "block";
+        empty.textContent = "No logged changes yet. Changes to Disposition, Standing, AC, and PRI are logged here automatically.";
+      } else {
+        empty.style.display = "none";
+        grid.innerHTML = list.map(entry => this._logEntryCard(entry)).join("");
       }
     }
   }
@@ -593,6 +666,47 @@ class DrinaxTrackerApp extends Application {
     this._pendingSourceUuid = null;
   }
 
+  // Shows a small dialog asking for an optional reason, used when logging a
+  // change to AC, Disposition, PRI, or Standing.
+  async _promptReason(title, summary) {
+    try {
+      const reason = await Dialog.prompt({
+        title,
+        content: `
+          <div class="dr-field"><p class="dr-card-meta">${summary}</p></div>
+          <div class="dr-field"><label>Reason (optional)</label><textarea id="dr-reason-input" rows="3"></textarea></div>
+        `,
+        label: "Log Change",
+        callback: (html) => {
+          const el = html instanceof jQuery ? html[0] : html;
+          return el.querySelector("#dr-reason-input").value.trim();
+        },
+        rejectClose: false
+      });
+      return reason || "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  async _logChange(entityType, entityName, changes) {
+    if (!changes.length) return;
+    const summary = changes.map(c => `${esc(c.field)}: ${esc(String(c.from))} &rarr; ${esc(String(c.to))}`).join("<br>");
+    const reason = await this._promptReason(`Log reason — ${entityName}`, summary);
+    this.state.log = this.state.log || [];
+    this.state.log.unshift({
+      id: uid(),
+      realTime: new Date().toISOString(),
+      gameDate: getCampaignDate(),
+      entityType,
+      entityName,
+      changes,
+      reason
+    });
+    await this._saveData();
+    if (this.currentTab === "log") this._renderContent();
+  }
+
   async _saveFaction(id) {
     const root = this.root;
     const name = root.querySelector("[data-f-name]").value.trim();
@@ -607,15 +721,26 @@ class DrinaxTrackerApp extends Application {
       notes: root.querySelector("[data-f-notes]").value.trim(),
       protected: root.querySelector("[data-f-protected]").checked,
     };
+    let changes = [];
     if (id) {
       const idx = this.state.factions.findIndex(x => x.id === id);
-      this.state.factions[idx] = { ...this.state.factions[idx], ...data };
+      const prev = this.state.factions[idx];
+      if (prev.disposition !== data.disposition) {
+        changes.push({ field: "Disposition", from: dispInfo(prev.disposition).label, to: dispInfo(data.disposition).label });
+      }
+      const prevStanding = typeof prev.standing === "number" ? prev.standing : null;
+      const nextStanding = typeof data.standing === "number" ? data.standing : null;
+      if (prevStanding !== nextStanding) {
+        changes.push({ field: "Standing", from: prevStanding ?? "—", to: nextStanding ?? "—" });
+      }
+      this.state.factions[idx] = { ...prev, ...data };
     } else {
       this.state.factions.push({ id: uid(), ...data });
     }
     await this._saveData();
     this._closeDrawer();
     this._renderContent();
+    if (changes.length) await this._logChange("Faction", name, changes);
   }
 
   async _saveContact(id) {
@@ -630,15 +755,21 @@ class DrinaxTrackerApp extends Application {
       soc: socRaw === "" ? "" : Number(socRaw),
       notes: root.querySelector("[data-c-notes]").value.trim(),
     };
+    let changes = [];
     if (id) {
       const idx = this.state.contacts.findIndex(x => x.id === id);
-      this.state.contacts[idx] = { ...this.state.contacts[idx], ...data };
+      const prev = this.state.contacts[idx];
+      if ((prev.ac || "") !== (data.ac || "")) {
+        changes.push({ field: "AC", from: prev.ac || "—", to: data.ac || "—" });
+      }
+      this.state.contacts[idx] = { ...prev, ...data };
     } else {
       this.state.contacts.push({ id: uid(), actorUuid: this._pendingActorUuid || null, ...data });
     }
     await this._saveData();
     this._closeDrawer();
     this._renderContent();
+    if (changes.length) await this._logChange("Contact", name, changes);
   }
 
   async _saveWorld(id) {
@@ -682,17 +813,41 @@ class DrinaxTrackerApp extends Application {
     await this._saveData();
     this._renderContent();
   }
+}
 
-  async _resetConfirm() {
-    const ok = await Dialog.confirm({
-      title: "Reset tracker data",
-      content: "<p>Reset all tracker data back to the starting examples? This cannot be undone.</p>"
+// Reset is deliberately tucked away in Foundry's Configure Settings screen
+// (Module Settings) rather than the tracker toolbar, so it isn't one click
+// away during normal play. Dialog is itself an Application subclass, so it
+// works fine as a settings-menu "type" without needing a full FormApplication.
+class DrinaxResetDialog extends Dialog {
+  constructor() {
+    super({
+      title: "Reset Drinax Tracker Data",
+      content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>",
+      buttons: {
+        reset: {
+          icon: '<i class="fa-solid fa-trash"></i>',
+          label: "Reset Data",
+          callback: async () => {
+            const data = seedData();
+            await game.settings.set(MODULE_ID, "data", data);
+            const app = game.modules.get(MODULE_ID)?.app;
+            if (app?.rendered) {
+              app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+              const priInput = app.root.querySelector("[data-dr-pri]");
+              if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
+              app._renderContent();
+            }
+            ui.notifications.info("Drinax Tracker data has been reset.");
+          }
+        },
+        cancel: {
+          icon: '<i class="fa-solid fa-xmark"></i>',
+          label: "Cancel"
+        }
+      },
+      default: "cancel"
     });
-    if (!ok) return;
-    this.state = seedData();
-    await this._saveData();
-    this.root.querySelector("[data-dr-pri]").value = this.state.pri === "" ? "" : this.state.pri;
-    this._renderContent();
   }
 }
 
@@ -703,6 +858,15 @@ Hooks.once("init", () => {
     config: false,
     type: Object,
     default: null
+  });
+
+  game.settings.registerMenu(MODULE_ID, "resetData", {
+    name: "Reset Tracker Data",
+    label: "Reset Data",
+    hint: "Reset all Drinax Tracker factions, contacts, worlds, PRI, and the change log back to the starting examples. This cannot be undone.",
+    icon: "fa-solid fa-rotate-left",
+    type: DrinaxResetDialog,
+    restricted: true
   });
 });
 

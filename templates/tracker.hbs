@@ -298,6 +298,7 @@
   /* Custom dropdown, used instead of a native <select> so its colors are
      never overridden by the OS's native combo-box theming. */
   #drinax-root .dr-select { position: relative; }
+  #drinax-root .dr-filter-select { min-width: 170px; }
   #drinax-root .dr-select-btn {
     width: 100%;
     text-align: left;
@@ -427,15 +428,14 @@
     <button type="button" class="dr-tab active" data-dr-tab="factions">Factions</button>
     <button type="button" class="dr-tab" data-dr-tab="contacts">Contacts</button>
     <button type="button" class="dr-tab" data-dr-tab="worlds">Worlds</button>
+    <button type="button" class="dr-tab" data-dr-tab="log">Log</button>
   </div>
 
   <div class="dr-toolbar">
     <input type="text" class="dr-search" data-dr-search placeholder="Search...">
     <button type="button" class="dr-btn" data-dr-add>+ Add</button>
-    <button type="button" class="dr-btn dr-btn-ghost" data-dr-reset>Reset data</button>
+    <div class="dr-filters" data-dr-filters></div>
   </div>
-
-  <div class="dr-filters" data-dr-filters></div>
 
   <div class="dr-grid" data-dr-grid></div>
   <div class="dr-empty" data-dr-empty style="display:none;"></div>
