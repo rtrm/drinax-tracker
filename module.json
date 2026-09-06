@@ -14,7 +14,7 @@
     "scripts/drinax-tracker.js"
   ],
   "languages": [],
-  "url": "",
-  "manifest": "",
-  "download": ""
+  "url": "https://github.com/rtrm/drinax-tracker",
+  "manifest": "https://raw.githubusercontent.com/rtrm/drinax-tracker/main/module.json",
+  "download": "https://github.com/rtrm/drinax-tracker/archive/refs/heads/main.zip"
 }
