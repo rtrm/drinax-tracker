@@ -411,8 +411,19 @@
   #drinax-root .dr-field-checkbox input { width: auto; }
 
   #drinax-root .dr-inline-field { display: flex; gap: 6px; }
-  #drinax-root .dr-inline-field input { flex: 1; }
-  #drinax-root .dr-inline-field .dr-btn { white-space: nowrap; }
+  #drinax-root .dr-inline-field input { flex: 1; min-width: 0; }
+  #drinax-root .dr-icon-btn-square {
+    flex-shrink: 0;
+    width: 32px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0;
+  }
+  #drinax-root .dr-icon-btn-square:hover { border-color: var(--gold); color: var(--gold); }
 
   #drinax-root .dr-tm-results {
     margin: -6px 0 12px;

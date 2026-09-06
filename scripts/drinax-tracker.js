@@ -96,7 +96,7 @@ function formatHex(hexX, hexY) {
 // elsewhere in the OTU; otherwise falls back to showing all matches.
 async function searchTravellerMap(query) {
   try {
-    const res = await fetch(`https://travellermap.com/api/search?q=${encodeURIComponent(query)}&milieu=1105`);
+    const res = await fetch(`https://travellermap.com/api/search?q=${encodeURIComponent(query)}&milieu=M1105`);
     if (!res.ok) return [];
     const json = await res.json();
     const items = json?.Results?.Items || [];
@@ -453,6 +453,18 @@ class DrinaxTrackerApp extends Application {
       }
     });
 
+    // Auto-lookup on Traveller Map once a world Name is entered, if UWP is
+    // still blank. Uses focusout (bubbles), since blur does not.
+    root.addEventListener("focusout", (e) => {
+      if (e.target.matches("[data-w-name]")) {
+        const nameField = e.target;
+        const uwpField = this.root.querySelector("[data-w-uwp]");
+        if (nameField.value.trim() && uwpField && !uwpField.value.trim()) {
+          this._lookupTravellerMap();
+        }
+      }
+    });
+
     this._loadData().then(() => {
       priInput.value = this.state.pri === "" ? "" : this.state.pri;
       this._renderContent();
@@ -763,15 +775,15 @@ class DrinaxTrackerApp extends Application {
     w = w || { name: "", uwp: "", location: "", faction: "", status: "", tags: "", notes: "" };
     return `
       <h3>${isEdit ? "Edit world" : "Add world"}</h3>
+      <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
       <div class="dr-field">
-        <label>Name</label>
+        <label>UWP</label>
         <div class="dr-inline-field">
-          <input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass">
-          <button type="button" class="dr-btn dr-btn-ghost" data-dr-tm-lookup>Look up</button>
+          <input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C">
+          <button type="button" class="dr-icon-btn-square" data-dr-tm-lookup title="Look up on Traveller Map">&#128269;</button>
         </div>
       </div>
       <div class="dr-tm-results" data-dr-tm-results></div>
-      <div class="dr-field"><label>UWP</label><input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C"></div>
       <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
       <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.state.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
       <div class="dr-field"><label>Status</label><input type="text" list="dr-status-list" data-w-status value="${esc(w.status)}" placeholder="e.g. Contested">
@@ -999,38 +1011,32 @@ class DrinaxTrackerApp extends Application {
 
 // Reset is deliberately tucked away in Foundry's Configure Settings screen
 // (Module Settings) rather than the tracker toolbar, so it isn't one click
-// away during normal play. Dialog is itself an Application subclass, so it
-// works fine as a settings-menu "type" without needing a full FormApplication.
-class DrinaxResetDialog extends Dialog {
-  constructor() {
-    super({
+// away during normal play. Foundry requires a settings-menu "type" to be a
+// FormApplication (or ApplicationV2) subclass — a plain Dialog is rejected
+// with "You must provide a menu type that is a FormApplication or
+// ApplicationV2 instance or subclass" — so this overrides render() to show
+// a confirm dialog instead of ever opening an actual form window.
+class DrinaxResetMenu extends FormApplication {
+  async render() {
+    const ok = await Dialog.confirm({
       title: "Reset Drinax Tracker Data",
-      content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>",
-      buttons: {
-        reset: {
-          icon: '<i class="fa-solid fa-trash"></i>',
-          label: "Reset Data",
-          callback: async () => {
-            const data = seedData();
-            await game.settings.set(MODULE_ID, "data", data);
-            const app = game.modules.get(MODULE_ID)?.app;
-            if (app?.rendered) {
-              app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
-              const priInput = app.root.querySelector("[data-dr-pri]");
-              if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
-              app._renderContent();
-            }
-            ui.notifications.info("Drinax Tracker data has been reset.");
-          }
-        },
-        cancel: {
-          icon: '<i class="fa-solid fa-xmark"></i>',
-          label: "Cancel"
-        }
-      },
-      default: "cancel"
+      content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
     });
+    if (!ok) return this;
+    const data = seedData();
+    await game.settings.set(MODULE_ID, "data", data);
+    const app = game.modules.get(MODULE_ID)?.app;
+    if (app?.rendered) {
+      app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+      const priInput = app.root.querySelector("[data-dr-pri]");
+      if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
+      app._renderContent();
+    }
+    ui.notifications.info("Drinax Tracker data has been reset.");
+    return this;
   }
+
+  async _updateObject() { /* never submitted — render() is fully overridden above */ }
 }
 
 Hooks.once("init", () => {
@@ -1047,7 +1053,7 @@ Hooks.once("init", () => {
     label: "Reset Data",
     hint: "Reset all Drinax Tracker factions, contacts, worlds, PRI, and the change log back to the starting examples. This cannot be undone.",
     icon: "fa-solid fa-rotate-left",
-    type: DrinaxResetDialog,
+    type: DrinaxResetMenu,
     restricted: true
   });
 });
