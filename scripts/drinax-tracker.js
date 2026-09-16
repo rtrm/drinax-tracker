@@ -316,18 +316,23 @@ function seedData() {
   };
 }
 
-class DrinaxTrackerApp extends Application {
-  static get defaultOptions() {
-    return foundry.utils.mergeObject(super.defaultOptions, {
-      id: "drinax-tracker-app",
-      title: "Pirates of Drinax Tracker",
-      template: `modules/${MODULE_ID}/templates/tracker.hbs`,
-      width: 880,
-      height: 680,
-      resizable: true,
-      classes: ["drinax-tracker-window"]
-    });
-  }
+// Built on ApplicationV2, not the deprecated v1 Application class (Foundry
+// has deprecated Application/FormApplication/Dialog v1 as of v13 ahead of
+// their eventual removal, so this targets the replacement API throughout).
+// tracker.hbs has no Handlebars bindings (getData() previously returned
+// {}) — it's rendered once as a static shell and everything inside is
+// built via direct innerHTML from JS, exactly as before — so this uses a
+// raw ApplicationV2 subclass (no HandlebarsApplicationMixin) with a custom
+// _renderHTML that still renders that same .hbs file via the new
+// foundry.applications.handlebars.renderTemplate, rather than porting its
+// ~480 lines of markup into a JS template string.
+class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
+  static DEFAULT_OPTIONS = {
+    id: "drinax-tracker-app",
+    classes: ["drinax-tracker-window"],
+    window: { title: "Pirates of Drinax Tracker", resizable: true },
+    position: { width: 880, height: 680 }
+  };
 
   constructor(options = {}) {
     super(options);
@@ -338,7 +343,13 @@ class DrinaxTrackerApp extends Application {
     this._pendingSourceUuid = null;
   }
 
-  getData() { return {}; }
+  async _renderHTML(context, options) {
+    return foundry.applications.handlebars.renderTemplate(`modules/${MODULE_ID}/templates/tracker.hbs`, {});
+  }
+
+  async _replaceHTML(result, content, options) {
+    content.innerHTML = result;
+  }
 
   async _loadData() {
     let data = game.settings.get(MODULE_ID, "data");
@@ -378,10 +389,10 @@ class DrinaxTrackerApp extends Application {
     await game.settings.set(MODULE_ID, "data", this.state);
   }
 
-  activateListeners(html) {
-    super.activateListeners(html);
-    const root = html[0].querySelector("#drinax-root");
+  async _onRender(context, options) {
+    const root = this.element.querySelector("#drinax-root");
     this.root = root;
+    root.classList.toggle("dr-standard-look", standardLookEnabled());
 
     root.querySelectorAll("[data-dr-tab]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -935,16 +946,15 @@ class DrinaxTrackerApp extends Application {
   // change to AC, Disposition, PRI, or Standing.
   async _promptReason(title, summary) {
     try {
-      const reason = await Dialog.prompt({
-        title,
+      const reason = await foundry.applications.api.DialogV2.prompt({
+        window: { title },
         content: `
           <div class="dr-field"><p class="dr-card-meta">${summary}</p></div>
           <div class="dr-field"><label>Reason (optional)</label><textarea id="dr-reason-input" rows="3"></textarea></div>
         `,
-        label: "Log Change",
-        callback: (html) => {
-          const el = html instanceof jQuery ? html[0] : html;
-          return el.querySelector("#dr-reason-input").value.trim();
+        ok: {
+          label: "Log Change",
+          callback: (event, button) => button.form.querySelector("#dr-reason-input").value.trim()
         },
         rejectClose: false
       });
@@ -1155,8 +1165,8 @@ class DrinaxTrackerApp extends Application {
   }
 
   async _delete(type, id) {
-    const ok = await Dialog.confirm({
-      title: "Delete entry",
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Delete entry" },
       content: "<p>Delete this entry? This cannot be undone.</p>"
     });
     if (!ok) return;
@@ -1176,14 +1186,18 @@ class DrinaxTrackerApp extends Application {
 // Reset is deliberately tucked away in Foundry's Configure Settings screen
 // (Module Settings) rather than the tracker toolbar, so it isn't one click
 // away during normal play. Foundry requires a settings-menu "type" to be a
-// FormApplication (or ApplicationV2) subclass — a plain Dialog is rejected
+// FormApplication or ApplicationV2 subclass — a plain Dialog is rejected
 // with "You must provide a menu type that is a FormApplication or
 // ApplicationV2 instance or subclass" — so this overrides render() to show
-// a confirm dialog instead of ever opening an actual form window.
-class DrinaxResetMenu extends FormApplication {
-  async render() {
-    const ok = await Dialog.confirm({
-      title: "Reset Drinax Tracker Data",
+// a confirm dialog instead of ever opening an actual form window. Built on
+// ApplicationV2 (not the deprecated FormApplication) for the same reason as
+// DrinaxTrackerApp above.
+class DrinaxResetMenu extends foundry.applications.api.ApplicationV2 {
+  static DEFAULT_OPTIONS = { id: "drinax-tracker-reset-menu", window: { title: "Reset Drinax Tracker Data" } };
+
+  async render(options) {
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Reset Drinax Tracker Data" },
       content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
     });
     if (!ok) return this;
@@ -1199,8 +1213,16 @@ class DrinaxResetMenu extends FormApplication {
     ui.notifications.info("Drinax Tracker data has been reset.");
     return this;
   }
+}
 
-  async _updateObject() { /* never submitted — render() is fully overridden above */ }
+// "Use Standard Foundry Styling" — off by default, so nothing changes for
+// existing worlds until a GM opts in. When on, the window's custom dark/
+// gold theme is replaced with the browser/OS's own system colors and the
+// default UI font (see the "dr-standard-look" CSS block in tracker.hbs),
+// approximating Foundry's own native look rather than reproducing it
+// pixel-for-pixel.
+function standardLookEnabled() {
+  try { return !!game.settings.get(MODULE_ID, "standardLook"); } catch (err) { return false; }
 }
 
 Hooks.once("init", () => {
@@ -1210,6 +1232,19 @@ Hooks.once("init", () => {
     config: false,
     type: Object,
     default: null
+  });
+
+  game.settings.register(MODULE_ID, "standardLook", {
+    name: "Use Standard Foundry Styling",
+    hint: "Replace this module's custom dark/gold theme with Foundry's own default window/button styling.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => {
+      const app = game.modules.get(MODULE_ID)?.app;
+      if (app?.rendered) app.root?.classList.toggle("dr-standard-look", standardLookEnabled());
+    }
   });
 
   game.settings.registerMenu(MODULE_ID, "resetData", {
