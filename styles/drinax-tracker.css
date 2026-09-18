@@ -330,6 +330,33 @@
   overflow-y: auto;
 }
 
+/* Defensive fix for the menu's dropdown submenus (Format/Table/Font)
+   rendering inline instead of as a floating popup, confirmed live
+   (2026-09) — Foundry's ProseMirror menu is built on the standard
+   open-source "prosemirror-menu" package, whose dropdown popups depend on
+   being position:absolute against a position:relative editor container.
+   That CSS isn't reaching our window for some as-yet-unconfirmed reason;
+   this forces it directly, broadly matching on class name since Foundry's
+   exact internal class naming isn't confirmed. Scoped to our own window
+   only (#drinax-root .editor), so it can't affect anything else.
+   TODO(2026-09): still needs a live confirm — if the dropdowns are still
+   broken with this in place, this notes editor should be rebuilt as a
+   simpler custom contenteditable rather than continuing to chase Foundry's
+   own internal menu CSS. */
+#drinax-root .editor { position: relative; }
+#drinax-root .editor [class*="dropdown-menu"],
+#drinax-root .editor [class*="menu-dropdown"] {
+  position: absolute !important;
+  z-index: 100;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 160px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+}
+
 /* Custom @Drinax[...] entity-link content links, rendered by the enricher
    registered in the init hook. Reuses Foundry's own ".content-link" class
    for baseline appearance, this just accents it to match the theme. */
