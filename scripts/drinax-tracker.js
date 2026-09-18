@@ -288,7 +288,7 @@ async function checkStandingDriftAndPersist() {
   await game.settings.set(MODULE_ID, "data", data);
   const app = game.modules.get(MODULE_ID)?.app;
   if (app?.rendered) {
-    app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+    app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
     app._renderContent();
   }
 }
@@ -336,7 +336,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
   constructor(options = {}) {
     super(options);
-    this.state = { factions: [], contacts: [], worlds: [], pri: "", log: [] };
+    this.trackerState = { factions: [], contacts: [], worlds: [], pri: "", log: [] };
     this.currentTab = "factions";
     this.activeFilter = "all";
     this._pendingActorUuid = null;
@@ -375,7 +375,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       }
     });
     const drifted = runStandingDrift(data);
-    this.state = {
+    this.trackerState = {
       factions: data.factions || [],
       contacts: data.contacts || [],
       worlds: data.worlds || [],
@@ -386,7 +386,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 
   async _saveData() {
-    await game.settings.set(MODULE_ID, "data", this.state);
+    await game.settings.set(MODULE_ID, "data", this.trackerState);
   }
 
   async _onRender(context, options) {
@@ -413,16 +413,16 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
     const priInput = root.querySelector("[data-dr-pri]");
     priInput.addEventListener("change", async () => {
-      const prev = this.state.pri;
+      const prev = this.trackerState.pri;
       const next = priInput.value === "" ? "" : Number(priInput.value);
-      this.state.pri = next;
+      this.trackerState.pri = next;
       await this._saveData();
       if (prev !== next) await this._logChange("PRI", "Piracy Response Indicator", [{ field: "PRI", from: prev === "" ? "—" : prev, to: next === "" ? "—" : next }]);
     });
     const bumpPri = async (delta) => {
       const prev = priInput.value === "" ? 0 : Number(priInput.value);
       const next = prev + delta;
-      this.state.pri = next;
+      this.trackerState.pri = next;
       priInput.value = next;
       await this._saveData();
       await this._logChange("PRI", "Piracy Response Indicator", [{ field: "PRI", from: prev, to: next }]);
@@ -566,7 +566,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     });
 
     this._loadData().then(() => {
-      priInput.value = this.state.pri === "" ? "" : this.state.pri;
+      priInput.value = this.trackerState.pri === "" ? "" : this.trackerState.pri;
       this._renderContent();
     });
   }
@@ -644,11 +644,11 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   _renderSummary() {
     const el = this.root.querySelector("[data-dr-summary]");
     const chips = FACTION_CATEGORIES.map(c => {
-      const n = this.state.factions.filter(f => f.category === c.id).length;
+      const n = this.trackerState.factions.filter(f => f.category === c.id).length;
       return `<span class="dr-summary-chip"><b>${n}</b> ${esc(c.label)}</span>`;
     });
-    chips.push(`<span class="dr-summary-chip"><b>${this.state.contacts.length}</b> Contacts</span>`);
-    chips.push(`<span class="dr-summary-chip"><b>${this.state.worlds.length}</b> Worlds tracked</span>`);
+    chips.push(`<span class="dr-summary-chip"><b>${this.trackerState.contacts.length}</b> Contacts</span>`);
+    chips.push(`<span class="dr-summary-chip"><b>${this.trackerState.worlds.length}</b> Worlds tracked</span>`);
     el.innerHTML = chips.join("");
   }
 
@@ -715,7 +715,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 
   _worldCard(w) {
-    const f = w.faction ? this.state.factions.find(x => x.id === w.faction) : null;
+    const f = w.faction ? this.trackerState.factions.find(x => x.id === w.faction) : null;
     const cat = f ? catInfo(f.category) : null;
     const rel = relInfo(w.relationship);
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
@@ -761,13 +761,13 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     const q = (this.root.querySelector("[data-dr-search]").value || "").toLowerCase();
 
     if (this.currentTab === "factions") {
-      let list = this.state.factions.filter(f => this.activeFilter === "all" || f.category === this.activeFilter);
+      let list = this.trackerState.factions.filter(f => this.activeFilter === "all" || f.category === this.activeFilter);
       if (q) list = list.filter(f => (f.name + " " + (f.notes || "") + " " + (f.contact || "")).toLowerCase().includes(q));
       list.sort((a, b) => a.name.localeCompare(b.name));
       if (list.length === 0) {
         grid.innerHTML = "";
         empty.style.display = "block";
-        empty.textContent = this.state.factions.length === 0
+        empty.textContent = this.trackerState.factions.length === 0
           ? "No factions yet. Add the Kingdom, the Imperium, an Aslan clan, or any pirate crew you’re tracking."
           : "No factions match your search or filter.";
       } else {
@@ -775,13 +775,13 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         grid.innerHTML = list.map(f => this._factionCard(f)).join("");
       }
     } else if (this.currentTab === "contacts") {
-      let list = this.state.contacts.filter(c => this.activeFilter === "all" || c.role === this.activeFilter);
+      let list = this.trackerState.contacts.filter(c => this.activeFilter === "all" || c.role === this.activeFilter);
       if (q) list = list.filter(c => (c.name + " " + (c.notes || "") + " " + (c.ac || "")).toLowerCase().includes(q));
       list.sort((a, b) => a.name.localeCompare(b.name));
       if (list.length === 0) {
         grid.innerHTML = "";
         empty.style.display = "block";
-        empty.textContent = this.state.contacts.length === 0
+        empty.textContent = this.trackerState.contacts.length === 0
           ? "No contacts yet. Drag an Actor here, or use + Add, to track a contact, ally, or associate."
           : "No contacts match your search or filter.";
       } else {
@@ -789,13 +789,13 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         grid.innerHTML = list.map(c => this._contactCard(c)).join("");
       }
     } else if (this.currentTab === "worlds") {
-      let list = this.state.worlds.slice();
+      let list = this.trackerState.worlds.slice();
       if (q) list = list.filter(w => (w.name + " " + (w.notes || "") + " " + (w.status || "") + " " + (w.tags || "")).toLowerCase().includes(q));
       list.sort((a, b) => a.name.localeCompare(b.name));
       if (list.length === 0) {
         grid.innerHTML = "";
         empty.style.display = "block";
-        empty.textContent = this.state.worlds.length === 0
+        empty.textContent = this.trackerState.worlds.length === 0
           ? "No worlds yet. Add the ones your crew has surveyed, raided, or annexed, or drag a world entry here."
           : "No worlds match your search.";
       } else {
@@ -803,7 +803,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         grid.innerHTML = list.map(w => this._worldCard(w)).join("");
       }
     } else {
-      let list = (this.state.log || []).slice();
+      let list = (this.trackerState.log || []).slice();
       if (q) list = list.filter(entry => (entry.entityName + " " + (entry.reason || "") + " " + entry.changes.map(c => c.field).join(" ")).toLowerCase().includes(q));
       if (list.length === 0) {
         grid.innerHTML = "";
@@ -897,7 +897,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       </div>
       <div class="dr-tm-results" data-dr-tm-results></div>
       <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
-      <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.state.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
+      <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.trackerState.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
       <div class="dr-field">
         <label>Relationship</label>
         ${this._customSelectHtml("data-w-relationship", WORLD_RELATIONSHIPS.map(r => ({ value: r.id, label: r.label })), w.relationship || "neutral")}
@@ -919,13 +919,13 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     type = type || (this.currentTab === "factions" ? "faction" : this.currentTab === "contacts" ? "contact" : "world");
     const content = this.root.querySelector("[data-dr-drawer-content]");
     if (type === "faction") {
-      const f = id ? this.state.factions.find(x => x.id === id) : null;
+      const f = id ? this.trackerState.factions.find(x => x.id === id) : null;
       content.innerHTML = this._drawerFactionForm(f);
     } else if (type === "contact") {
-      const c = id ? this.state.contacts.find(x => x.id === id) : null;
+      const c = id ? this.trackerState.contacts.find(x => x.id === id) : null;
       content.innerHTML = this._drawerContactForm(c);
     } else {
-      const w = id ? this.state.worlds.find(x => x.id === id) : null;
+      const w = id ? this.trackerState.worlds.find(x => x.id === id) : null;
       content.innerHTML = this._drawerWorldForm(w);
       // Editing an existing world saved before a UWP was known — look it up
       // immediately rather than waiting for the GM to touch the Name field.
@@ -968,8 +968,8 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     if (!changes.length) return;
     const summary = changes.map(c => `${esc(c.field)}: ${esc(String(c.from))} &rarr; ${esc(String(c.to))}`).join("<br>");
     const reason = await this._promptReason(`Log reason — ${entityName}`, summary);
-    this.state.log = this.state.log || [];
-    this.state.log.unshift({
+    this.trackerState.log = this.trackerState.log || [];
+    this.trackerState.log.unshift({
       id: uid(),
       realTime: new Date().toISOString(),
       gameDate: getCampaignDate(),
@@ -1001,8 +1001,8 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     };
     let changes = [];
     if (id) {
-      const idx = this.state.factions.findIndex(x => x.id === id);
-      const prev = this.state.factions[idx];
+      const idx = this.trackerState.factions.findIndex(x => x.id === id);
+      const prev = this.trackerState.factions[idx];
       if (prev.disposition !== data.disposition) {
         changes.push({ field: "Disposition", from: dispInfo(prev.disposition).label, to: dispInfo(data.disposition).label });
       }
@@ -1012,9 +1012,9 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         changes.push({ field: "Standing", from: prevStanding ?? "—", to: nextStanding ?? "—" });
         data.standingUpdatedDay = gameDayIndex();
       }
-      this.state.factions[idx] = { ...prev, ...data };
+      this.trackerState.factions[idx] = { ...prev, ...data };
     } else {
-      this.state.factions.push({ id: uid(), standingUpdatedDay: gameDayIndex(), ...data });
+      this.trackerState.factions.push({ id: uid(), standingUpdatedDay: gameDayIndex(), ...data });
     }
     await this._saveData();
     this._closeDrawer();
@@ -1036,14 +1036,14 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     };
     let changes = [];
     if (id) {
-      const idx = this.state.contacts.findIndex(x => x.id === id);
-      const prev = this.state.contacts[idx];
+      const idx = this.trackerState.contacts.findIndex(x => x.id === id);
+      const prev = this.trackerState.contacts[idx];
       if ((prev.ac || "") !== (data.ac || "")) {
         changes.push({ field: "AC", from: prev.ac || "—", to: data.ac || "—" });
       }
-      this.state.contacts[idx] = { ...prev, ...data };
+      this.trackerState.contacts[idx] = { ...prev, ...data };
     } else {
-      this.state.contacts.push({ id: uid(), actorUuid: this._pendingActorUuid || null, ...data });
+      this.trackerState.contacts.push({ id: uid(), actorUuid: this._pendingActorUuid || null, ...data });
     }
     await this._saveData();
     this._closeDrawer();
@@ -1098,7 +1098,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     const name = this.root.querySelector("[data-w-name]")?.value || "";
     const uwp = this.root.querySelector("[data-w-uwp]")?.value || "";
     const factionId = this.root.querySelector("[data-w-faction]")?.value || "";
-    const faction = this.state.factions.find(f => f.id === factionId);
+    const faction = this.trackerState.factions.find(f => f.id === factionId);
     const relationship = defaultWorldRelationship({ name, factionCategory: faction?.category, uwp });
     this._setCustomSelectValue("data-w-relationship", relationship);
     const effectsEl = this.root.querySelector("[data-dr-relationship-effects]");
@@ -1131,7 +1131,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         else if (allegiance.startsWith("Im")) targetCategory = "imperium";
       }
       if (targetCategory) {
-        const faction = this.state.factions.find(f => f.category === targetCategory);
+        const faction = this.trackerState.factions.find(f => f.category === targetCategory);
         if (faction) this._setCustomSelectValue("data-w-faction", faction.id);
       }
     }
@@ -1154,10 +1154,10 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       notes: root.querySelector("[data-w-notes]").value.trim(),
     };
     if (id) {
-      const idx = this.state.worlds.findIndex(x => x.id === id);
-      this.state.worlds[idx] = { ...this.state.worlds[idx], ...data };
+      const idx = this.trackerState.worlds.findIndex(x => x.id === id);
+      this.trackerState.worlds[idx] = { ...this.trackerState.worlds[idx], ...data };
     } else {
-      this.state.worlds.push({ id: uid(), sourceUuid: this._pendingSourceUuid || null, ...data });
+      this.trackerState.worlds.push({ id: uid(), sourceUuid: this._pendingSourceUuid || null, ...data });
     }
     await this._saveData();
     this._closeDrawer();
@@ -1171,12 +1171,12 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     });
     if (!ok) return;
     if (type === "faction") {
-      this.state.factions = this.state.factions.filter(x => x.id !== id);
-      this.state.worlds.forEach(w => { if (w.faction === id) w.faction = null; });
+      this.trackerState.factions = this.trackerState.factions.filter(x => x.id !== id);
+      this.trackerState.worlds.forEach(w => { if (w.faction === id) w.faction = null; });
     } else if (type === "contact") {
-      this.state.contacts = this.state.contacts.filter(x => x.id !== id);
+      this.trackerState.contacts = this.trackerState.contacts.filter(x => x.id !== id);
     } else {
-      this.state.worlds = this.state.worlds.filter(x => x.id !== id);
+      this.trackerState.worlds = this.trackerState.worlds.filter(x => x.id !== id);
     }
     await this._saveData();
     this._renderContent();
@@ -1205,7 +1205,7 @@ class DrinaxResetMenu extends foundry.applications.api.ApplicationV2 {
     await game.settings.set(MODULE_ID, "data", data);
     const app = game.modules.get(MODULE_ID)?.app;
     if (app?.rendered) {
-      app.state = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+      app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
       const priInput = app.root.querySelector("[data-dr-pri]");
       if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
       app._renderContent();
@@ -1294,7 +1294,7 @@ Hooks.on("updateSetting", (setting) => {
   if (!app?.rendered) return;
   const data = game.settings.get(MODULE_ID, "data");
   if (!data) return;
-  app.state = {
+  app.trackerState = {
     factions: data.factions || [],
     contacts: data.contacts || [],
     worlds: data.worlds || [],
@@ -1302,7 +1302,7 @@ Hooks.on("updateSetting", (setting) => {
     log: data.log || []
   };
   const priInput = app.root?.querySelector("[data-dr-pri]");
-  if (priInput) priInput.value = app.state.pri === "" ? "" : app.state.pri;
+  if (priInput) priInput.value = app.trackerState.pri === "" ? "" : app.trackerState.pri;
   app._renderContent();
 });
 
