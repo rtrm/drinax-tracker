@@ -1515,7 +1515,14 @@ Hooks.once("init", () => {
     scope: "world",
     config: true,
     type: Boolean,
-    default: false,
+    // Default on: the custom dark/gold theme was fighting Foundry's own
+    // <prose-mirror> notes editor, whose toolbar icons are styled by
+    // Foundry's own core CSS assuming Foundry's own (light) editor
+    // background — forcing our dark background under them left the icons
+    // nearly invisible (confirmed live, 2026-09). Standard look avoids that
+    // entirely by matching Foundry's own look everywhere, not just in the
+    // editor.
+    default: true,
     onChange: () => {
       const app = game.modules.get(MODULE_ID)?.app;
       if (app?.rendered) app.root?.classList.toggle("dr-standard-look", standardLookEnabled());
