@@ -328,7 +328,7 @@ function entityWindowKey(type, id) { return `${type}:${id || "new"}`; }
 function openEntityWindow(type, id, prefill) {
   const key = entityWindowKey(type, id);
   const existing = entityWindows.get(key);
-  if (existing?.rendered) { existing.bringToTop(); return existing; }
+  if (existing?.rendered) { existing.bringToFront(); return existing; }
   const win = new DrinaxEntityWindow(type, id, prefill);
   entityWindows.set(key, win);
   win.render(true);
