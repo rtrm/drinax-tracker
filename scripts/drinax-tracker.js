@@ -510,22 +510,6 @@ function notesToEditableHtml(notes) {
   return looksLikeHtml(notes) ? notes : `<p>${esc(notes)}</p>`;
 }
 
-// Renders notes (stored as HTML) through Foundry's own enricher pipeline, so
-// both native @UUID links and this module's own @Drinax[...] entity links
-// (registered in the init hook below) render as real clickable links in the
-// collapsed card view, not just inside the editor. Falls back to plain
-// escaped text if enrichment fails for any reason, rather than breaking the
-// whole card render.
-async function enrichNotes(notes) {
-  if (!notes) return "";
-  try {
-    const TextEditorImpl = foundry.applications.ux.TextEditor.implementation || foundry.applications.ux.TextEditor;
-    return await TextEditorImpl.enrichHTML(notes, { async: true });
-  } catch (err) {
-    console.warn("Drinax Tracker | Notes enrichment failed, showing plain text.", err);
-    return `<p>${esc(notes)}</p>`;
-  }
-}
 
 // Built on ApplicationV2, not the deprecated v1 Application class (Foundry
 // has deprecated Application/FormApplication/Dialog v1 as of v13 ahead of
@@ -794,12 +778,11 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     }
   }
 
-  async _factionCard(f) {
+  _factionCard(f) {
     const cat = catInfo(f.category);
     const disp = dispInfo(f.disposition);
     const hasStanding = STANDING_CATEGORIES.includes(f.category) && typeof f.standing === "number" && Number.isFinite(f.standing);
     const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
-    const notesHtml = await enrichNotes(f.notes);
     return `
       <div class="dr-card" style="--cat-color:${cat.color}" data-dr-card-type="faction" data-dr-card-id="${f.id}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(f.name)}</p></div>
@@ -807,19 +790,17 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         <span class="dr-badge"><span class="dr-dot" style="--dot-color:${disp.color}"></span>${esc(disp.label)}</span>
         ${hasStanding ? `<div class="dr-card-meta">Standing: ${standingLabel}</div>` : ""}
         ${f.contact ? `<div class="dr-card-meta">Contact: ${esc(f.contact)}</div>` : ""}
-        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         <div class="dr-card-actions">
           ${f.protected ? "" : `<button type="button" class="dr-icon-btn danger" data-dr-del-faction="${f.id}">Delete</button>`}
         </div>
       </div>`;
   }
 
-  async _contactCard(c) {
+  _contactCard(c) {
     const role = roleInfo(c.role);
     const av = calcAV(c.soc);
     const hasSoc = typeof c.soc === "number" && Number.isFinite(c.soc);
     const world = c.location ? this.trackerState.worlds.find(w => w.id === c.location) : null;
-    const notesHtml = await enrichNotes(c.notes);
     return `
       <div class="dr-card" style="--cat-color:${role.color}" data-dr-card-type="contact" data-dr-card-id="${c.id}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(c.name)}</p></div>
@@ -827,7 +808,6 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         ${c.ac ? `<span class="dr-badge">AC ${esc(c.ac)}</span>` : ""}
         ${hasSoc ? `<div class="dr-card-meta">SOC ${c.soc} &middot; AV ${av}</div>` : ""}
         ${world ? `<div class="dr-card-meta">Location: <a href="#" data-dr-open-entity="world:${world.id}">${esc(world.name)}</a></div>` : ""}
-        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         ${c.actorUuid ? `<div class="dr-card-meta"><a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open actor sheet</a></div>` : ""}
         <div class="dr-card-actions">
           <button type="button" class="dr-icon-btn danger" data-dr-del-contact="${c.id}">Delete</button>
@@ -835,13 +815,12 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       </div>`;
   }
 
-  async _worldCard(w) {
+  _worldCard(w) {
     const f = w.faction ? this.trackerState.factions.find(x => x.id === w.faction) : null;
     const cat = f ? catInfo(f.category) : null;
     const rel = relInfo(w.relationship);
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     const linkedContacts = this.trackerState.contacts.filter(c => c.location === w.id);
-    const notesHtml = await enrichNotes(w.notes);
     return `
       <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"}" data-dr-card-type="world" data-dr-card-id="${w.id}">
         <div class="dr-card-top">
@@ -855,7 +834,6 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         ${w.status ? `<div class="dr-card-meta">Status: ${esc(w.status)}</div>` : ""}
         ${tags.length ? `<div class="dr-card-tags">${tags.map(t => `<span class="dr-tag-pill">${esc(t)}</span>`).join("")}</div>` : ""}
         ${linkedContacts.length ? `<div class="dr-card-meta">Contacts here: ${linkedContacts.map(c => `<a href="#" data-dr-open-entity="contact:${c.id}">${esc(c.name)}</a>`).join(", ")}</div>` : ""}
-        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         ${w.sourceUuid ? `<div class="dr-card-meta"><a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source document</a></div>` : ""}
         <div class="dr-card-actions">
           <button type="button" class="dr-icon-btn danger" data-dr-del-world="${w.id}">Delete</button>
@@ -876,7 +854,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       </div>`;
   }
 
-  async _renderContent() {
+  _renderContent() {
     this._renderSummary();
     this._renderFilters();
     const grid = this.root.querySelector("[data-dr-grid]");
@@ -895,7 +873,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No factions match your search or filter.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = (await Promise.all(list.map(f => this._factionCard(f)))).join("");
+        grid.innerHTML = list.map(f => this._factionCard(f)).join("");
       }
     } else if (this.currentTab === "contacts") {
       let list = this.trackerState.contacts.filter(c => {
@@ -914,7 +892,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No contacts match your search or filter.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = (await Promise.all(list.map(c => this._contactCard(c)))).join("");
+        grid.innerHTML = list.map(c => this._contactCard(c)).join("");
       }
     } else if (this.currentTab === "worlds") {
       let list = this.trackerState.worlds.slice();
@@ -928,7 +906,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No worlds match your search.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = (await Promise.all(list.map(w => this._worldCard(w)))).join("");
+        grid.innerHTML = list.map(w => this._worldCard(w)).join("");
       }
     } else {
       let list = (this.trackerState.log || []).slice();

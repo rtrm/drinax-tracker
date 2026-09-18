@@ -245,8 +245,6 @@
   line-height: 1.45;
   margin: 0;
 }
-#drinax-root .dr-card-notes p:first-child { margin-top: 0; }
-#drinax-root .dr-card-notes p:last-child { margin-bottom: 0; }
 #drinax-root .dr-card-tags {
   display: flex;
   flex-wrap: wrap;
