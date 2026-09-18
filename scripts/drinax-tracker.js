@@ -1558,8 +1558,8 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
 // ApplicationV2 (not the deprecated FormApplication) for the same reason as
 // DrinaxTrackerApp above.
 //
-// Shared by the settings-menu entry below and the "/drinax-reset" chat
-// command (see the chatMessage hook near the bottom of this file) — both
+// Shared by the settings-menu entry below and the "drinax reset" chat
+// trigger (see the chatMessage hook near the bottom of this file) — both
 // are just different ways to trigger the same confirm-then-reset flow.
 async function resetTrackerData() {
   const ok = await foundry.applications.api.DialogV2.confirm({
@@ -1706,14 +1706,20 @@ Hooks.on("updateSetting", (setting) => {
   refreshOpenWindows();
 });
 
-// "/drinax-reset" chat command — Foundry has no built-in slash-command
-// framework, so this hooks the raw chat entry box directly. Returning false
-// from "chatMessage" stops Foundry from posting the text as a normal chat
+// "drinax reset" chat trigger (plain text, deliberately no leading "/") —
+// confirmed live (2026-09) that a leading "/" routes the message through
+// Foundry's OWN built-in command validator first, which rejects any
+// unrecognized "/word" outright ("is not a valid chat message command")
+// before any module's "chatMessage" hook gets a chance to intercept it —
+// registering a genuinely new slash-verb needs a different, more involved
+// mechanism than a plain hook. Plain (non-"/") text never goes through
+// that validator, so this hook reliably sees it. Returning false from
+// "chatMessage" stops Foundry from posting the text as a normal chat
 // message; any other input is left completely alone (returning true) so
 // this can never interfere with real chat, rolls, or other modules' own
 // commands.
 Hooks.on("chatMessage", (chatLog, message) => {
-  if (message.trim().toLowerCase() !== "/drinax-reset") return true;
+  if (message.trim().toLowerCase() !== "drinax reset") return true;
   if (!game.user.isGM) {
     ui.notifications.warn("Only the GM can reset Drinax Tracker data.");
     return false;
