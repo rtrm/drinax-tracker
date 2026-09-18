@@ -1558,9 +1558,12 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
 // ApplicationV2 (not the deprecated FormApplication) for the same reason as
 // DrinaxTrackerApp above.
 //
-// Shared by the settings-menu entry below and the "drinax reset" chat
-// trigger (see the chatMessage hook near the bottom of this file) — both
-// are just different ways to trigger the same confirm-then-reset flow.
+// Called from the settings-menu entry below. Chat-based triggers ("/drinax-
+// reset", then plain "drinax reset") were tried first and both failed live
+// for reasons never fully pinned down (a leading "/" is confirmed routed
+// through Foundry's own command validator before any module hook runs at
+// all, and even dropping the "/" didn't reliably work either), so this
+// settings-menu path — already proven working — is the only trigger now.
 async function resetTrackerData() {
   const ok = await foundry.applications.api.DialogV2.confirm({
     window: { title: "Reset Drinax Tracker Data" },
@@ -1704,28 +1707,6 @@ Hooks.on("updateSetting", (setting) => {
 Hooks.on("updateSetting", (setting) => {
   if (setting.key !== `${MODULE_ID}.data`) return;
   refreshOpenWindows();
-});
-
-// "drinax reset" chat trigger (plain text, deliberately no leading "/") —
-// confirmed live (2026-09) that a leading "/" routes the message through
-// Foundry's OWN built-in command validator first, which rejects any
-// unrecognized "/word" outright ("is not a valid chat message command")
-// before any module's "chatMessage" hook gets a chance to intercept it —
-// registering a genuinely new slash-verb needs a different, more involved
-// mechanism than a plain hook. Plain (non-"/") text never goes through
-// that validator, so this hook reliably sees it. Returning false from
-// "chatMessage" stops Foundry from posting the text as a normal chat
-// message; any other input is left completely alone (returning true) so
-// this can never interfere with real chat, rolls, or other modules' own
-// commands.
-Hooks.on("chatMessage", (chatLog, message) => {
-  if (message.trim().toLowerCase() !== "drinax reset") return true;
-  if (!game.user.isGM) {
-    ui.notifications.warn("Only the GM can reset Drinax Tracker data.");
-    return false;
-  }
-  resetTrackerData();
-  return false;
 });
 
 // Best-effort button in the Journal Directory header. If Foundry's sidebar
