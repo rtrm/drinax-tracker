@@ -466,11 +466,42 @@ function relationshipEffectsText(id) {
   return `Fence ${r.fence} &middot; Recruit ${r.recruitment} &middot; Arrest ${r.riskArrest} &middot; Spies ${r.riskSpies} &middot; Protect ${r.protection}`;
 }
 
+// Fully custom rich-text notes editor — NOT Foundry's own <prose-mirror>/
+// ProseMirrorEditor. Both were tried and confirmed broken live (2026-09):
+// the markup-only <prose-mirror> element wasn't even typeable, and
+// ProseMirrorEditor.create()'s own dropdown menus (Format/Table/Font)
+// rendered as inline content instead of floating popups, breaking the
+// whole window's layout — and a defensive CSS fix aimed at Foundry's
+// internal menu classes didn't help either. This trades Foundry's fancier
+// editor chrome (tables, paragraph styles, a format-painter tool) for a
+// small, plain `contenteditable` box with our own toolbar, fully under
+// this module's own CSS — no more dependency on undocumented Foundry
+// internals. `document.execCommand` is technically deprecated but still
+// broadly supported in the Chromium/Electron environment Foundry runs in,
+// and is by far the simplest way to implement bold/italic/underline/lists
+// on a contenteditable element.
+function notesToolbarHtml() {
+  return `
+    <div class="dr-notes-toolbar">
+      <button type="button" class="dr-icon-btn" data-dr-fmt="bold" title="Bold"><b>B</b></button>
+      <button type="button" class="dr-icon-btn" data-dr-fmt="italic" title="Italic"><i>I</i></button>
+      <button type="button" class="dr-icon-btn" data-dr-fmt="underline" title="Underline"><u>U</u></button>
+      <button type="button" class="dr-icon-btn" data-dr-fmt="insertUnorderedList" title="Bullet list">&bull; List</button>
+      <button type="button" class="dr-icon-btn" data-dr-fmt="insertOrderedList" title="Numbered list">1. List</button>
+      <button type="button" class="dr-icon-btn" data-dr-insert-hyperlink title="Insert hyperlink">Link</button>
+      <button type="button" class="dr-icon-btn" data-dr-insert-image title="Insert image">Image</button>
+      <button type="button" class="dr-icon-btn" data-dr-insert-link title="Link to another tracker entity">+ Entity Link&hellip;</button>
+    </div>`;
+}
+function notesEditorHtml(notes) {
+  return `${notesToolbarHtml()}<div class="dr-notes-editable" contenteditable="true" data-dr-notes-editable>${notesToEditableHtml(notes)}</div>`;
+}
+
 // Treats a notes string that already contains an HTML tag as rich HTML
-// (this module's format going forward, written by the <prose-mirror>
-// editor); anything else is legacy plain text from before notes were rich
-// text, wrapped/escaped once so old notes containing literal "<"/">" don't
-// get misread as markup.
+// (this module's format going forward, written by the notes editor);
+// anything else is legacy plain text from before notes were rich text,
+// wrapped/escaped once so old notes containing literal "<"/">" don't get
+// misread as markup.
 function looksLikeHtml(s) {
   return /<[a-z][\s\S]*>/i.test(s || "");
 }
@@ -952,7 +983,6 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     this.entityId = entityId; // null while adding
     this.prefill = prefill || null; // { name, actorUuid, sourceUuid, uwp, soc }
     this._tmResults = null;
-    this._notesEditor = null;
   }
 
   get id() { return `drinax-entity-${this.entityType}-${this.entityId || "new"}`; }
@@ -989,10 +1019,6 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
 
   async close(options) {
     if (this._outsideClickHandler) document.removeEventListener("click", this._outsideClickHandler);
-    if (this._notesEditor) {
-      try { this._notesEditor.destroy(); } catch (err) { /* already gone */ }
-      this._notesEditor = null;
-    }
     entityWindows.delete(entityWindowKey(this.entityType, this.entityId));
     return super.close(options);
   }
@@ -1044,6 +1070,20 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
 
       const insertLink = e.target.closest("[data-dr-insert-link]");
       if (insertLink) { this._insertEntityLink(); return; }
+
+      const fmtBtn = e.target.closest("[data-dr-fmt]");
+      if (fmtBtn) {
+        e.preventDefault();
+        const editable = root.querySelector("[data-dr-notes-editable]");
+        if (editable) { editable.focus(); document.execCommand(fmtBtn.dataset.drFmt, false, null); }
+        return;
+      }
+
+      const insertHyperlink = e.target.closest("[data-dr-insert-hyperlink]");
+      if (insertHyperlink) { this._insertHyperlink(); return; }
+
+      const insertImage = e.target.closest("[data-dr-insert-image]");
+      if (insertImage) { this._insertImage(); return; }
 
       const openEntity = e.target.closest("[data-dr-open-entity]");
       if (openEntity) { e.preventDefault(); const [type, id] = openEntity.dataset.drOpenEntity.split(":"); openEntityWindow(type, id); return; }
@@ -1109,36 +1149,13 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       const uwp = entity?.uwp || this.prefill?.uwp;
       if (name && !uwp) this._lookupTravellerMap();
     }
-    this._mountNotesEditor(entity?.notes || "");
   }
 
-  // Mounts a REAL ProseMirror editor via Foundry's own documented JS
-  // construction API, targeting the live DOM node (not markup-only
-  // `<prose-mirror>` auto-upgrade, which was confirmed live, 2026-09, to
-  // produce a non-functional editor here — no icons, not even typeable).
-  // Required container shape per Foundry's own v10 TextEditor docs:
-  // <div class="editor"><div class="editor-content">...</div></div>,
-  // targeting the inner ".editor-content" node.
-  async _mountNotesEditor(initialNotes) {
-    if (this._notesEditor) {
-      try { this._notesEditor.destroy(); } catch (err) { /* already gone */ }
-      this._notesEditor = null;
-    }
-    const mount = this.root.querySelector("[data-dr-notes-mount] .editor-content");
-    if (!mount) return;
-    try {
-      this._notesEditor = await foundry.applications.ux.ProseMirrorEditor.create(mount, notesToEditableHtml(initialNotes), {});
-    } catch (err) {
-      console.warn("Drinax Tracker | Could not create notes editor.", err);
-    }
-  }
-
-  // Reads the editor's current content straight from its live DOM —
-  // ProseMirror's EditorView renders the document as real, always-current
-  // DOM (not a virtual model needing separate serialization), so this is
-  // the standard, reliable way to get its HTML back.
+  // Reads the notes editor's current content straight from its live DOM —
+  // it's a plain contenteditable box, so its innerHTML already IS the
+  // current content, no separate serialization needed.
   _notesHtml() {
-    return this._notesEditor?.view?.dom?.innerHTML || "";
+    return this.root.querySelector("[data-dr-notes-editable]")?.innerHTML || "";
   }
 
   _factionForm(f) {
@@ -1158,8 +1175,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       </div>
       <div class="dr-field">
         <label>Notes</label>
-        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
+        ${notesEditorHtml(f.notes)}
       </div>
       <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
       <div class="dr-drawer-actions">
@@ -1190,8 +1206,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       <div class="dr-field"><label>Location</label>${customSelectHtml("data-c-location", locationItems, c.location || "")}</div>
       <div class="dr-field">
         <label>Notes</label>
-        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
+        ${notesEditorHtml(c.notes)}
       </div>
       ${c.actorUuid ? `<div class="dr-card-meta">Linked actor: <a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open sheet</a></div>` : ""}
       <div class="dr-drawer-actions">
@@ -1234,8 +1249,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       ${linkedContacts.length ? `<div class="dr-field"><label>Contacts here</label><div class="dr-card-meta">${linkedContacts.map(c => `<a href="#" data-dr-open-entity="contact:${c.id}">${esc(c.name)}</a>`).join(", ")}</div></div>` : ""}
       <div class="dr-field">
         <label>Notes</label>
-        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
+        ${notesEditorHtml(w.notes)}
       </div>
       ${w.sourceUuid ? `<div class="dr-card-meta">Linked document: <a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source</a></div>` : ""}
       <div class="dr-drawer-actions">
@@ -1245,11 +1259,40 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       </div>`;
   }
 
-  // Inserts "@Drinax[type:id]{Name}" as plain text at the current cursor
-  // position in the notes editor, via ProseMirror's own transaction API
-  // (real, stable, documented ProseMirror-core behavior, not a Foundry-
-  // specific guess) — dispatching a transaction is the standard way to
-  // programmatically edit a live EditorView's content.
+  // Saves the current text selection/cursor position within `editable`
+  // (if any) before something that steals focus away from it — a DialogV2
+  // prompt, a FilePicker — so it can be restored afterward and the
+  // insertion lands where the user actually had their cursor, not
+  // wherever focus happens to end up.
+  _captureSelection(editable) {
+    const sel = window.getSelection();
+    if (!editable || !sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (!editable.contains(range.commonAncestorContainer)) return null;
+    return range.cloneRange();
+  }
+
+  // Restores a captured selection (or, if none, positions at the end of
+  // the editable content) and focuses the editor — call immediately
+  // before any execCommand that should act at that position.
+  _restoreSelection(editable, range) {
+    editable.focus();
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    if (range) {
+      sel.addRange(range);
+      return;
+    }
+    const r = document.createRange();
+    r.selectNodeContents(editable);
+    r.collapse(false);
+    sel.addRange(r);
+  }
+
+  // Inserts "@Drinax[type:id]{Name}" as plain text at the notes editor's
+  // cursor position — this plain text is exactly what the "drinax-link"
+  // enricher (registered in the init hook) later matches when rendering
+  // notes on a card, turning it into a clickable link.
   async _insertEntityLink() {
     const data = this._data();
     const options = [
@@ -1258,6 +1301,8 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       ...data.worlds.map(x => ({ value: `world:${x.id}`, label: `World — ${x.name}` }))
     ].filter(o => o.value !== `${this.entityType}:${this.entityId}`);
     if (!options.length) { ui.notifications.warn("Nothing else to link to yet."); return; }
+    const editable = this.root.querySelector("[data-dr-notes-editable]");
+    const savedRange = this._captureSelection(editable);
     const picked = await foundry.applications.api.DialogV2.prompt({
       window: { title: "Link to Entity" },
       content: `<div class="dr-field"><label>Entity</label><select id="dr-link-pick">${options.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("")}</select></div>`,
@@ -1267,14 +1312,54 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       },
       rejectClose: false
     }).catch(() => null);
-    if (!picked) return;
+    if (!picked || !editable) return;
     const [type, entId] = picked.split(":");
     const entity = findEntity(type, entId);
-    const view = this._notesEditor?.view;
-    if (!view || !entity) return;
-    const tag = `@Drinax[${type}:${entId}]{${entity.name}}`;
-    view.dispatch(view.state.tr.insertText(tag));
-    view.focus();
+    if (!entity) return;
+    this._restoreSelection(editable, savedRange);
+    document.execCommand("insertText", false, `@Drinax[${type}:${entId}]{${entity.name}}`);
+  }
+
+  // Wraps the current selection in a hyperlink, or inserts the URL as new
+  // linked text if nothing was selected.
+  async _insertHyperlink() {
+    const editable = this.root.querySelector("[data-dr-notes-editable]");
+    const savedRange = this._captureSelection(editable);
+    const hadSelection = !!savedRange && !savedRange.collapsed;
+    const url = await foundry.applications.api.DialogV2.prompt({
+      window: { title: "Insert Hyperlink" },
+      content: `<div class="dr-field"><label>URL</label><input type="text" id="dr-link-url" placeholder="https://..."></div>`,
+      ok: {
+        label: "Insert",
+        callback: (event, button) => button.form.querySelector("#dr-link-url").value.trim()
+      },
+      rejectClose: false
+    }).catch(() => null);
+    if (!url || !editable) return;
+    this._restoreSelection(editable, savedRange);
+    if (hadSelection) document.execCommand("createLink", false, url);
+    else document.execCommand("insertHTML", false, `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`);
+  }
+
+  // Opens Foundry's own FilePicker to choose an image, then inserts it at
+  // the notes editor's cursor position.
+  async _insertImage() {
+    const editable = this.root.querySelector("[data-dr-notes-editable]");
+    const savedRange = this._captureSelection(editable);
+    const FilePickerImpl = foundry.applications.apps.FilePicker.implementation;
+    await new Promise(resolve => {
+      const fp = new FilePickerImpl({
+        type: "image",
+        callback: (path) => {
+          if (editable) {
+            this._restoreSelection(editable, savedRange);
+            document.execCommand("insertHTML", false, `<img src="${esc(path)}" style="max-width:100%;">`);
+          }
+          resolve();
+        }
+      });
+      fp.render(true);
+    });
   }
 
   async _lookupTravellerMap() {
