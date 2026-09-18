@@ -277,8 +277,8 @@ function runStandingDrift(data) {
   return dirty;
 }
 
-// Re-reads the saved data, applies drift, and persists + refreshes the open
-// tracker window (if any) — used when the mgt2e campaign date changes while
+// Re-reads the saved data, applies drift, and persists + refreshes any open
+// tracker/entity windows — used when the mgt2e campaign date changes while
 // nobody has the tracker open.
 async function checkStandingDriftAndPersist() {
   if (!game.user.isGM) return;
@@ -286,11 +286,7 @@ async function checkStandingDriftAndPersist() {
   if (!data) return;
   if (!runStandingDrift(data)) return;
   await game.settings.set(MODULE_ID, "data", data);
-  const app = game.modules.get(MODULE_ID)?.app;
-  if (app?.rendered) {
-    app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
-    app._renderContent();
-  }
+  refreshOpenWindows();
 }
 
 function seedData() {
@@ -305,7 +301,7 @@ function seedData() {
       { id: uid(), category: "other", name: "Example Other Faction", disposition: "neutral", contact: "", notes: "Use this category for corporations, local governments, or other groups.", protected: false },
     ],
     contacts: [
-      { id: uid(), role: "ally", name: "Example Ally Contact", ac: "Dr", soc: 9, notes: "Rename to an NPC ally, informant, or associate from your campaign.", actorUuid: null },
+      { id: uid(), role: "ally", name: "Example Ally Contact", ac: "Dr", soc: 9, location: "", notes: "Rename to an NPC ally, informant, or associate from your campaign.", actorUuid: null },
     ],
     worlds: [
       { id: uid(), name: "Drinax", uwp: "", location: "", faction: drinaxFactionId, status: "Under Drinax control", tags: "homeworld", notes: "The throne world itself — fill in UWP and current condition.", sourceUuid: null, relationship: "haven" },
@@ -314,6 +310,190 @@ function seedData() {
     pri: "",
     log: []
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers used by both DrinaxTrackerApp and DrinaxEntityWindow (data
+// access, per-entity windows registry, rich-text notes).
+// ---------------------------------------------------------------------------
+
+// Per-entity windows (faction/contact/world), replacing the old in-window
+// sliding drawer — each opens as its own real ApplicationV2 window, so an
+// entity can be viewed/edited (and cross-referenced) independently of the
+// main tracker window.
+const entityWindows = new Map(); // `${type}:${id||"new"}` -> DrinaxEntityWindow
+
+function entityWindowKey(type, id) { return `${type}:${id || "new"}`; }
+
+function openEntityWindow(type, id, prefill) {
+  const key = entityWindowKey(type, id);
+  const existing = entityWindows.get(key);
+  if (existing?.rendered) { existing.bringToTop(); return existing; }
+  const win = new DrinaxEntityWindow(type, id, prefill);
+  entityWindows.set(key, win);
+  win.render(true);
+  return win;
+}
+
+// Refreshes the main tracker window (re-reading settings into its own cached
+// trackerState, the same way this file already did in a couple of places)
+// plus every currently open entity window — call after ANY change to the
+// shared data, from wherever that change happened.
+function refreshOpenWindows() {
+  const mainApp = game.modules.get(MODULE_ID)?.app;
+  if (mainApp?.rendered) {
+    const data = game.settings.get(MODULE_ID, "data");
+    if (data) {
+      mainApp.trackerState = {
+        factions: data.factions || [],
+        contacts: data.contacts || [],
+        worlds: data.worlds || [],
+        pri: data.pri ?? "",
+        log: data.log || []
+      };
+      const priInput = mainApp.root?.querySelector("[data-dr-pri]");
+      if (priInput) priInput.value = mainApp.trackerState.pri === "" ? "" : mainApp.trackerState.pri;
+      mainApp._renderContent();
+    }
+  }
+  for (const win of entityWindows.values()) {
+    if (win.rendered) win._renderContent();
+  }
+}
+
+function findEntity(type, id) {
+  const data = game.settings.get(MODULE_ID, "data");
+  if (!data) return null;
+  const list = data[`${type}s`];
+  return (list || []).find(x => x.id === id) || null;
+}
+
+function entityIcon(type) {
+  return type === "faction" ? "fa-flag" : type === "contact" ? "fa-user" : "fa-globe";
+}
+
+function entityTypeLabel(type) {
+  return type === "faction" ? "Faction" : type === "contact" ? "Contact" : "World";
+}
+
+// GM confirms, then removes the entity from settings data and closes/drops
+// any window open on it. Shared by the card grid's own Delete button and the
+// matching button inside an entity's own window.
+async function deleteEntity(type, id) {
+  const ok = await foundry.applications.api.DialogV2.confirm({
+    window: { title: "Delete entry" },
+    content: "<p>Delete this entry? This cannot be undone.</p>"
+  });
+  if (!ok) return false;
+  const data = game.settings.get(MODULE_ID, "data") || seedData();
+  if (type === "faction") {
+    data.factions = (data.factions || []).filter(x => x.id !== id);
+    (data.worlds || []).forEach(w => { if (w.faction === id) w.faction = null; });
+  } else if (type === "contact") {
+    data.contacts = (data.contacts || []).filter(x => x.id !== id);
+  } else {
+    data.worlds = (data.worlds || []).filter(x => x.id !== id);
+    (data.contacts || []).forEach(c => { if (c.location === id) c.location = ""; });
+  }
+  await game.settings.set(MODULE_ID, "data", data);
+  const key = entityWindowKey(type, id);
+  const win = entityWindows.get(key);
+  entityWindows.delete(key);
+  if (win?.rendered) win.close();
+  refreshOpenWindows();
+  return true;
+}
+
+// Shows a small dialog asking for an optional reason, used when logging a
+// change to AC, Disposition, PRI, or Standing.
+async function promptReason(title, summary) {
+  try {
+    const reason = await foundry.applications.api.DialogV2.prompt({
+      window: { title },
+      content: `
+        <div class="dr-field"><p class="dr-card-meta">${summary}</p></div>
+        <div class="dr-field"><label>Reason (optional)</label><textarea id="dr-reason-input" rows="3"></textarea></div>
+      `,
+      ok: {
+        label: "Log Change",
+        callback: (event, button) => button.form.querySelector("#dr-reason-input").value.trim()
+      },
+      rejectClose: false
+    });
+    return reason || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+// Appends a log entry to `data.log` (mutating it — caller is responsible for
+// persisting `data` afterward, same as every other write in this file).
+async function logChange(data, entityType, entityName, changes) {
+  if (!changes.length) return;
+  const summary = changes.map(c => `${esc(c.field)}: ${esc(String(c.from))} &rarr; ${esc(String(c.to))}`).join("<br>");
+  const reason = await promptReason(`Log reason — ${entityName}`, summary);
+  data.log = data.log || [];
+  data.log.unshift({
+    id: uid(),
+    realTime: new Date().toISOString(),
+    gameDate: getCampaignDate(),
+    entityType,
+    entityName,
+    changes,
+    reason
+  });
+}
+
+// Custom dropdown markup used in place of native <select>, since native
+// select popups on this platform ignore our dark theme colors (Windows'
+// combo-box chrome overrides author styling for both the closed box and,
+// in some cases, the popup list). The hidden input keeps the same
+// data-attribute the save methods already query, so nothing else changes.
+function customSelectHtml(dataAttr, items, selected) {
+  const selectedItem = items.find(it => it.value === (selected ?? ""));
+  const label = selectedItem ? selectedItem.label : "";
+  const opts = items.map(it => `<div class="dr-select-opt ${it.value === (selected ?? "") ? "selected" : ""}" data-dr-select-value="${esc(it.value)}">${esc(it.label)}</div>`).join("");
+  return `
+    <div class="dr-select">
+      <button type="button" class="dr-select-btn" data-dr-select-toggle>${esc(label)}</button>
+      <div class="dr-select-menu">${opts}</div>
+      <input type="hidden" ${dataAttr} value="${esc(selected ?? "")}">
+    </div>`;
+}
+
+function relationshipEffectsText(id) {
+  const r = relInfo(id);
+  return `Fence ${r.fence} &middot; Recruit ${r.recruitment} &middot; Arrest ${r.riskArrest} &middot; Spies ${r.riskSpies} &middot; Protect ${r.protection}`;
+}
+
+// Treats a notes string that already contains an HTML tag as rich HTML
+// (this module's format going forward, written by the <prose-mirror>
+// editor); anything else is legacy plain text from before notes were rich
+// text, wrapped/escaped once so old notes containing literal "<"/">" don't
+// get misread as markup.
+function looksLikeHtml(s) {
+  return /<[a-z][\s\S]*>/i.test(s || "");
+}
+function notesToEditableHtml(notes) {
+  if (!notes) return "";
+  return looksLikeHtml(notes) ? notes : `<p>${esc(notes)}</p>`;
+}
+
+// Renders notes (stored as HTML) through Foundry's own enricher pipeline, so
+// both native @UUID links and this module's own @Drinax[...] entity links
+// (registered in the init hook below) render as real clickable links in the
+// collapsed card view, not just inside the editor. Falls back to plain
+// escaped text if enrichment fails for any reason, rather than breaking the
+// whole card render.
+async function enrichNotes(notes) {
+  if (!notes) return "";
+  try {
+    const TextEditorImpl = foundry.applications.ux.TextEditor.implementation || foundry.applications.ux.TextEditor;
+    return await TextEditorImpl.enrichHTML(notes, { async: true });
+  } catch (err) {
+    console.warn("Drinax Tracker | Notes enrichment failed, showing plain text.", err);
+    return `<p>${esc(notes)}</p>`;
+  }
 }
 
 // Built on ApplicationV2, not the deprecated v1 Application class (Foundry
@@ -339,8 +519,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     this.trackerState = { factions: [], contacts: [], worlds: [], pri: "", log: [] };
     this.currentTab = "factions";
     this.activeFilter = "all";
-    this._pendingActorUuid = null;
-    this._pendingSourceUuid = null;
+    this.activeLocationFilter = "all";
   }
 
   async _renderHTML(context, options) {
@@ -374,6 +553,10 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         migrated = true;
       }
     });
+    // One-time migration: contacts saved before the Location field existed.
+    (data.contacts || []).forEach(c => {
+      if (c.location === undefined) { c.location = ""; migrated = true; }
+    });
     const drifted = runStandingDrift(data);
     this.trackerState = {
       factions: data.factions || [],
@@ -398,6 +581,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       btn.addEventListener("click", () => {
         this.currentTab = btn.dataset.drTab;
         this.activeFilter = "all";
+        this.activeLocationFilter = "all";
         root.querySelectorAll("[data-dr-tab]").forEach(b => b.classList.toggle("active", b === btn));
         root.querySelector("[data-dr-search]").value = "";
         root.querySelector("[data-dr-add]").style.display = this.currentTab === "log" ? "none" : "";
@@ -406,9 +590,9 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     });
 
     root.querySelector("[data-dr-search]").addEventListener("input", () => this._renderContent());
-    root.querySelector("[data-dr-add]").addEventListener("click", () => this._openDrawer());
-    root.querySelector("[data-dr-overlay]").addEventListener("click", (e) => {
-      if (e.target === e.currentTarget) this._closeDrawer();
+    root.querySelector("[data-dr-add]").addEventListener("click", () => {
+      const type = this.currentTab === "factions" ? "faction" : this.currentTab === "contacts" ? "contact" : "world";
+      openEntityWindow(type, null);
     });
 
     const priInput = root.querySelector("[data-dr-pri]");
@@ -441,7 +625,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     };
     document.addEventListener("click", this._outsideClickHandler);
 
-    // Delegated clicks for dynamically generated card/filter/drawer content
+    // Delegated clicks for dynamically generated card/filter content
     root.addEventListener("click", (e) => {
       const filterToggle = e.target.closest("[data-dr-filter-toggle]");
       if (filterToggle) {
@@ -454,43 +638,12 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
       const filterOpt = e.target.closest("[data-dr-filter-value]");
       if (filterOpt) {
-        this.activeFilter = filterOpt.dataset.drFilterValue;
+        const kind = filterOpt.closest(".dr-filter-select")?.dataset.drFilterKind || "primary";
+        if (kind === "location") this.activeLocationFilter = filterOpt.dataset.drFilterValue;
+        else this.activeFilter = filterOpt.dataset.drFilterValue;
         this._renderContent();
         return;
       }
-
-      const editFaction = e.target.closest("[data-dr-edit-faction]");
-      if (editFaction) { this._openDrawer("faction", editFaction.dataset.drEditFaction); return; }
-
-      const editContact = e.target.closest("[data-dr-edit-contact]");
-      if (editContact) { this._openDrawer("contact", editContact.dataset.drEditContact); return; }
-
-      const editWorld = e.target.closest("[data-dr-edit-world]");
-      if (editWorld) { this._openDrawer("world", editWorld.dataset.drEditWorld); return; }
-
-      const tmLookup = e.target.closest("[data-dr-tm-lookup]");
-      if (tmLookup) { this._lookupTravellerMap(); return; }
-
-      const tmResult = e.target.closest("[data-dr-tm-result]");
-      if (tmResult) { this._applyTravellerMapResult(Number(tmResult.dataset.drTmResult)); return; }
-
-      const delFaction = e.target.closest("[data-dr-del-faction]");
-      if (delFaction) { this._delete("faction", delFaction.dataset.drDelFaction); return; }
-
-      const delContact = e.target.closest("[data-dr-del-contact]");
-      if (delContact) { this._delete("contact", delContact.dataset.drDelContact); return; }
-
-      const delWorld = e.target.closest("[data-dr-del-world]");
-      if (delWorld) { this._delete("world", delWorld.dataset.drDelWorld); return; }
-
-      const saveFaction = e.target.closest("[data-dr-save-faction]");
-      if (saveFaction) { this._saveFaction(saveFaction.dataset.drSaveFaction || null); return; }
-
-      const saveContact = e.target.closest("[data-dr-save-contact]");
-      if (saveContact) { this._saveContact(saveContact.dataset.drSaveContact || null); return; }
-
-      const saveWorld = e.target.closest("[data-dr-save-world]");
-      if (saveWorld) { this._saveWorld(saveWorld.dataset.drSaveWorld || null); return; }
 
       const openActor = e.target.closest("[data-dr-open-actor]");
       if (openActor) { e.preventDefault(); fromUuid(openActor.dataset.drOpenActor).then(doc => doc?.sheet?.render(true)); return; }
@@ -498,71 +651,28 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       const openSource = e.target.closest("[data-dr-open-source]");
       if (openSource) { e.preventDefault(); fromUuid(openSource.dataset.drOpenSource).then(doc => doc?.sheet?.render(true)); return; }
 
-      const cancel = e.target.closest("[data-dr-cancel]");
-      if (cancel) { this._closeDrawer(); return; }
-
-      const selectToggle = e.target.closest("[data-dr-select-toggle]");
-      if (selectToggle) {
-        const menu = selectToggle.nextElementSibling;
-        const wasOpen = menu.classList.contains("open");
-        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
-        if (!wasOpen) menu.classList.add("open");
+      const openEntity = e.target.closest("[data-dr-open-entity]");
+      if (openEntity) {
+        e.preventDefault();
+        e.stopPropagation();
+        const [type, id] = openEntity.dataset.drOpenEntity.split(":");
+        openEntityWindow(type, id);
         return;
       }
 
-      const selectOpt = e.target.closest("[data-dr-select-value]");
-      if (selectOpt) {
-        const wrapper = selectOpt.closest(".dr-select");
-        const hidden = wrapper.querySelector("input[type=hidden]");
-        const btn = wrapper.querySelector("[data-dr-select-toggle]");
-        hidden.value = selectOpt.dataset.drSelectValue;
-        btn.textContent = selectOpt.textContent;
-        wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === selectOpt));
-        wrapper.querySelector(".dr-select-menu").classList.remove("open");
+      const delFaction = e.target.closest("[data-dr-del-faction]");
+      if (delFaction) { e.stopPropagation(); deleteEntity("faction", delFaction.dataset.drDelFaction); return; }
 
-        if (hidden.hasAttribute("data-f-category")) {
-          const standingWrapper = this.root.querySelector("[data-f-standing-wrapper]");
-          if (standingWrapper) {
-            standingWrapper.style.display = STANDING_CATEGORIES.includes(hidden.value) ? "" : "none";
-          }
-        }
-        if (hidden.hasAttribute("data-w-faction")) {
-          this._recomputeWorldRelationshipDefault();
-        }
-        return;
-      }
+      const delContact = e.target.closest("[data-dr-del-contact]");
+      if (delContact) { e.stopPropagation(); deleteEntity("contact", delContact.dataset.drDelContact); return; }
+
+      const delWorld = e.target.closest("[data-dr-del-world]");
+      if (delWorld) { e.stopPropagation(); deleteEntity("world", delWorld.dataset.drDelWorld); return; }
+
+      const card = e.target.closest(".dr-card[data-dr-card-type]");
+      if (card) { openEntityWindow(card.dataset.drCardType, card.dataset.drCardId); return; }
 
       root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
-    });
-
-    // Delegated input for live Asset Value recalculation as SOC changes, and
-    // live Relationship-default recalculation as a world's UWP is typed.
-    root.addEventListener("input", (e) => {
-      if (e.target.matches("[data-c-soc]")) {
-        const avField = this.root.querySelector("[data-c-av]");
-        if (avField) {
-          const av = calcAV(e.target.value);
-          avField.value = av === "" ? "" : av;
-        }
-      }
-      if (e.target.matches("[data-w-uwp]")) {
-        this._recomputeWorldRelationshipDefault();
-      }
-    });
-
-    // Auto-lookup on Traveller Map once a world Name is entered, if UWP is
-    // still blank. Uses focusout (bubbles), since blur does not. Also
-    // recomputes the Relationship default, since Drinax/Theev are named
-    // special cases that apply even when UWP is already known.
-    root.addEventListener("focusout", (e) => {
-      if (e.target.matches("[data-w-name]")) {
-        const nameField = e.target;
-        const uwpField = this.root.querySelector("[data-w-uwp]");
-        if (nameField.value.trim() && uwpField && !uwpField.value.trim()) {
-          this._lookupTravellerMap();
-        }
-        this._recomputeWorldRelationshipDefault();
-      }
     });
 
     this._loadData().then(() => {
@@ -593,30 +703,9 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           ui.notifications.warn(`Drop an Actor onto the Contacts tab to create a contact (got type "${data.type}").`);
           return;
         }
-        this._pendingActorUuid = doc.uuid;
-        this._openDrawer("contact", null);
-        const nameField = this.root.querySelector("[data-c-name]");
-        const socField = this.root.querySelector("[data-c-soc]");
-        const avField = this.root.querySelector("[data-c-av]");
-        if (nameField) nameField.value = doc.name;
-        const soc = guessActorSoc(doc);
-        if (soc !== "" && socField) {
-          socField.value = soc;
-          if (avField) avField.value = calcAV(soc);
-        }
+        openEntityWindow("contact", null, { name: doc.name, actorUuid: doc.uuid, soc: guessActorSoc(doc) });
       } else {
-        this._pendingSourceUuid = doc.uuid;
-        this._openDrawer("world", null);
-        const nameField = this.root.querySelector("[data-w-name]");
-        const uwpField = this.root.querySelector("[data-w-uwp]");
-        if (nameField) nameField.value = doc.name;
-        const uwp = guessWorldUwp(doc);
-        if (uwp && uwpField) {
-          uwpField.value = uwp;
-          this._recomputeWorldRelationshipDefault();
-        } else {
-          await this._lookupTravellerMap();
-        }
+        openEntityWindow("world", null, { name: doc.name, sourceUuid: doc.uuid, uwp: guessWorldUwp(doc) });
       }
       return;
     }
@@ -629,16 +718,8 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       ui.notifications.warn("Drinax Tracker: couldn't read what was dropped — see the browser console (F12) for the raw payload.");
       return;
     }
-    if (this.currentTab === "contacts") {
-      this._openDrawer("contact", null);
-      const nameField = this.root.querySelector("[data-c-name]");
-      if (nameField) nameField.value = text;
-    } else {
-      this._openDrawer("world", null);
-      const nameField = this.root.querySelector("[data-w-name]");
-      if (nameField) nameField.value = text;
-      await this._lookupTravellerMap();
-    }
+    if (this.currentTab === "contacts") openEntityWindow("contact", null, { name: text });
+    else openEntityWindow("world", null, { name: text });
   }
 
   _renderSummary() {
@@ -652,11 +733,11 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     el.innerHTML = chips.join("");
   }
 
-  _filterSelectHtml(items, selected) {
+  _filterSelectHtml(items, selected, kind) {
     const selectedItem = items.find(it => it.value === selected) || items[0];
     const opts = items.map(it => `<div class="dr-select-opt ${it.value === selected ? "selected" : ""}" data-dr-filter-value="${esc(it.value)}">${esc(it.label)}</div>`).join("");
     return `
-      <div class="dr-select dr-filter-select">
+      <div class="dr-select dr-filter-select" data-dr-filter-kind="${esc(kind || "primary")}">
         <button type="button" class="dr-select-btn" data-dr-filter-toggle>${esc(selectedItem.label)}</button>
         <div class="dr-select-menu">${opts}</div>
       </div>`;
@@ -666,61 +747,72 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     const el = this.root.querySelector("[data-dr-filters]");
     if (this.currentTab === "factions") {
       const items = [{ value: "all", label: "All Categories" }, ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label }))];
-      el.innerHTML = this._filterSelectHtml(items, this.activeFilter);
+      el.innerHTML = this._filterSelectHtml(items, this.activeFilter, "primary");
     } else if (this.currentTab === "contacts") {
-      const items = [{ value: "all", label: "All Roles" }, ...CONTACT_ROLES.map(r => ({ value: r.id, label: r.label }))];
-      el.innerHTML = this._filterSelectHtml(items, this.activeFilter);
+      const roleItems = [{ value: "all", label: "All Roles" }, ...CONTACT_ROLES.map(r => ({ value: r.id, label: r.label }))];
+      const locationItems = [
+        { value: "all", label: "All Locations" },
+        { value: "none", label: "Unspecified" },
+        ...this.trackerState.worlds.map(w => ({ value: w.id, label: w.name }))
+      ];
+      el.innerHTML =
+        this._filterSelectHtml(roleItems, this.activeFilter, "primary") +
+        this._filterSelectHtml(locationItems, this.activeLocationFilter, "location");
     } else {
       el.innerHTML = "";
     }
   }
 
-  _factionCard(f) {
+  async _factionCard(f) {
     const cat = catInfo(f.category);
     const disp = dispInfo(f.disposition);
     const hasStanding = STANDING_CATEGORIES.includes(f.category) && typeof f.standing === "number" && Number.isFinite(f.standing);
     const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
+    const notesHtml = await enrichNotes(f.notes);
     return `
-      <div class="dr-card" style="--cat-color:${cat.color}">
+      <div class="dr-card" style="--cat-color:${cat.color}" data-dr-card-type="faction" data-dr-card-id="${f.id}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(f.name)}</p></div>
         <span class="dr-card-tag">${esc(cat.label)}</span>
         <span class="dr-badge"><span class="dr-dot" style="--dot-color:${disp.color}"></span>${esc(disp.label)}</span>
         ${hasStanding ? `<div class="dr-card-meta">Standing: ${standingLabel}</div>` : ""}
         ${f.contact ? `<div class="dr-card-meta">Contact: ${esc(f.contact)}</div>` : ""}
-        ${f.notes ? `<p class="dr-card-notes">${esc(f.notes)}</p>` : ""}
+        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         <div class="dr-card-actions">
-          <button type="button" class="dr-icon-btn" data-dr-edit-faction="${f.id}">Edit</button>
           ${f.protected ? "" : `<button type="button" class="dr-icon-btn danger" data-dr-del-faction="${f.id}">Delete</button>`}
         </div>
       </div>`;
   }
 
-  _contactCard(c) {
+  async _contactCard(c) {
     const role = roleInfo(c.role);
     const av = calcAV(c.soc);
     const hasSoc = typeof c.soc === "number" && Number.isFinite(c.soc);
+    const world = c.location ? this.trackerState.worlds.find(w => w.id === c.location) : null;
+    const notesHtml = await enrichNotes(c.notes);
     return `
-      <div class="dr-card" style="--cat-color:${role.color}">
+      <div class="dr-card" style="--cat-color:${role.color}" data-dr-card-type="contact" data-dr-card-id="${c.id}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(c.name)}</p></div>
         <span class="dr-card-tag">${esc(role.label)}</span>
         ${c.ac ? `<span class="dr-badge">AC ${esc(c.ac)}</span>` : ""}
         ${hasSoc ? `<div class="dr-card-meta">SOC ${c.soc} &middot; AV ${av}</div>` : ""}
-        ${c.notes ? `<p class="dr-card-notes">${esc(c.notes)}</p>` : ""}
+        ${world ? `<div class="dr-card-meta">Location: <a href="#" data-dr-open-entity="world:${world.id}">${esc(world.name)}</a></div>` : ""}
+        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         ${c.actorUuid ? `<div class="dr-card-meta"><a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open actor sheet</a></div>` : ""}
         <div class="dr-card-actions">
-          <button type="button" class="dr-icon-btn" data-dr-edit-contact="${c.id}">Edit</button>
           <button type="button" class="dr-icon-btn danger" data-dr-del-contact="${c.id}">Delete</button>
         </div>
       </div>`;
   }
 
-  _worldCard(w) {
+  async _worldCard(w) {
     const f = w.faction ? this.trackerState.factions.find(x => x.id === w.faction) : null;
     const cat = f ? catInfo(f.category) : null;
     const rel = relInfo(w.relationship);
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    const linkedContacts = this.trackerState.contacts.filter(c => c.location === w.id);
+    const notesHtml = await enrichNotes(w.notes);
     return `
-      <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"}">
+      <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"}" data-dr-card-type="world" data-dr-card-id="${w.id}">
         <div class="dr-card-top">
           <p class="dr-card-name">${esc(w.name)}</p>
           ${w.uwp ? `<span class="dr-card-uwp mono">${esc(w.uwp)}</span>` : ""}
@@ -731,10 +823,10 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         <div class="dr-card-meta">${this._relationshipEffectsText(w.relationship)}</div>
         ${w.status ? `<div class="dr-card-meta">Status: ${esc(w.status)}</div>` : ""}
         ${tags.length ? `<div class="dr-card-tags">${tags.map(t => `<span class="dr-tag-pill">${esc(t)}</span>`).join("")}</div>` : ""}
-        ${w.notes ? `<p class="dr-card-notes">${esc(w.notes)}</p>` : ""}
+        ${linkedContacts.length ? `<div class="dr-card-meta">Contacts here: ${linkedContacts.map(c => `<a href="#" data-dr-open-entity="contact:${c.id}">${esc(c.name)}</a>`).join(", ")}</div>` : ""}
+        ${notesHtml ? `<div class="dr-card-notes">${notesHtml}</div>` : ""}
         ${w.sourceUuid ? `<div class="dr-card-meta"><a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source document</a></div>` : ""}
         <div class="dr-card-actions">
-          <button type="button" class="dr-icon-btn" data-dr-edit-world="${w.id}">Edit</button>
           <button type="button" class="dr-icon-btn danger" data-dr-del-world="${w.id}">Delete</button>
         </div>
       </div>`;
@@ -753,7 +845,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       </div>`;
   }
 
-  _renderContent() {
+  async _renderContent() {
     this._renderSummary();
     this._renderFilters();
     const grid = this.root.querySelector("[data-dr-grid]");
@@ -772,10 +864,15 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No factions match your search or filter.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = list.map(f => this._factionCard(f)).join("");
+        grid.innerHTML = (await Promise.all(list.map(f => this._factionCard(f)))).join("");
       }
     } else if (this.currentTab === "contacts") {
-      let list = this.trackerState.contacts.filter(c => this.activeFilter === "all" || c.role === this.activeFilter);
+      let list = this.trackerState.contacts.filter(c => {
+        if (this.activeFilter !== "all" && c.role !== this.activeFilter) return false;
+        if (this.activeLocationFilter === "all") return true;
+        if (this.activeLocationFilter === "none") return !c.location;
+        return c.location === this.activeLocationFilter;
+      });
       if (q) list = list.filter(c => (c.name + " " + (c.notes || "") + " " + (c.ac || "")).toLowerCase().includes(q));
       list.sort((a, b) => a.name.localeCompare(b.name));
       if (list.length === 0) {
@@ -786,7 +883,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No contacts match your search or filter.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = list.map(c => this._contactCard(c)).join("");
+        grid.innerHTML = (await Promise.all(list.map(c => this._contactCard(c)))).join("");
       }
     } else if (this.currentTab === "worlds") {
       let list = this.trackerState.worlds.slice();
@@ -800,7 +897,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           : "No worlds match your search.";
       } else {
         empty.style.display = "none";
-        grid.innerHTML = list.map(w => this._worldCard(w)).join("");
+        grid.innerHTML = (await Promise.all(list.map(w => this._worldCard(w)))).join("");
       }
     } else {
       let list = (this.trackerState.log || []).slice();
@@ -816,158 +913,12 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     }
   }
 
-  // Custom dropdown markup used in place of native <select>, since native
-  // select popups on this platform ignore our dark theme colors (Windows'
-  // combo-box chrome overrides author styling for both the closed box and,
-  // in some cases, the popup list). The hidden input keeps the same
-  // data-attribute the save methods already query, so nothing else changes.
-  _customSelectHtml(dataAttr, items, selected) {
-    const selectedItem = items.find(it => it.value === (selected ?? ""));
-    const label = selectedItem ? selectedItem.label : "";
-    const opts = items.map(it => `<div class="dr-select-opt ${it.value === (selected ?? "") ? "selected" : ""}" data-dr-select-value="${esc(it.value)}">${esc(it.label)}</div>`).join("");
-    return `
-      <div class="dr-select">
-        <button type="button" class="dr-select-btn" data-dr-select-toggle>${esc(label)}</button>
-        <div class="dr-select-menu">${opts}</div>
-        <input type="hidden" ${dataAttr} value="${esc(selected ?? "")}">
-      </div>`;
-  }
-
-  _drawerFactionForm(f) {
-    const isEdit = !!f;
-    f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "", standing: "", protected: false };
-    const showStanding = STANDING_CATEGORIES.includes(f.category);
-    return `
-      <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
-      <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
-      <div class="dr-field"><label>Category</label>${this._customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
-      <div class="dr-field"><label>Disposition toward the party</label>${this._customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
-      <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
-      <div data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}">
-        <div class="dr-field"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
-        <div class="dr-field"><label>Standing reverts toward (baseline)</label><input type="number" data-f-standing-baseline value="${f.standingBaseline === "" || f.standingBaseline === null || f.standingBaseline === undefined ? defaultStandingBaseline(f.category) : f.standingBaseline}" placeholder="e.g. 0"></div>
-        <p class="dr-card-meta">Standing drifts 1 point toward the baseline for every 30 in-game days elapsed.</p>
-      </div>
-      <div class="dr-field"><label>Notes</label><textarea data-f-notes placeholder="Goals, assets, history with the party...">${esc(f.notes)}</textarea></div>
-      <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
-      <div class="dr-drawer-actions">
-        <button type="button" class="dr-btn" data-dr-save-faction="${isEdit ? f.id : ""}">Save</button>
-        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
-      </div>`;
-  }
-
-  _drawerContactForm(c) {
-    const isEdit = !!c;
-    c = c || { role: "contact", name: "", ac: "", soc: "", notes: "", actorUuid: null };
-    const av = calcAV(c.soc);
-    return `
-      <h3>${isEdit ? "Edit contact" : "Add contact"}</h3>
-      <div class="dr-field"><label>Name</label><input type="text" data-c-name value="${esc(c.name)}" placeholder="e.g. Baron Nakamura"></div>
-      <div class="dr-field"><label>Role</label>${this._customSelectHtml("data-c-role", CONTACT_ROLES.map(r => ({ value: r.id, label: r.label })), c.role)}</div>
-      <div class="dr-field"><label>Allegiance Code (AC)</label><input type="text" list="dr-ac-list" data-c-ac value="${esc(c.ac)}" placeholder="e.g. Dr">
-        <datalist id="dr-ac-list">${ALLEGIANCE_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
-      </div>
-      <div class="dr-field"><label>Social Standing (SOC)</label><input type="number" data-c-soc value="${c.soc === "" || c.soc === null || c.soc === undefined ? "" : c.soc}" placeholder="e.g. 9"></div>
-      <div class="dr-field"><label>Asset Value (AV = SOC&sup3;)</label><input type="text" class="dr-field-readonly" data-c-av value="${av === "" ? "" : av}" readonly tabindex="-1"></div>
-      <div class="dr-field"><label>Notes</label><textarea data-c-notes placeholder="Background, history with the party...">${esc(c.notes)}</textarea></div>
-      ${c.actorUuid ? `<div class="dr-card-meta">Linked actor: <a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open sheet</a></div>` : ""}
-      <div class="dr-drawer-actions">
-        <button type="button" class="dr-btn" data-dr-save-contact="${isEdit ? c.id : ""}">Save</button>
-        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
-      </div>`;
-  }
-
-  _relationshipEffectsText(id) {
-    const r = relInfo(id);
-    return `Fence ${r.fence} &middot; Recruit ${r.recruitment} &middot; Arrest ${r.riskArrest} &middot; Spies ${r.riskSpies} &middot; Protect ${r.protection}`;
-  }
-
-  _drawerWorldForm(w) {
-    const isEdit = !!w;
-    w = w || { name: "", uwp: "", location: "", faction: "", status: "", tags: "", notes: "", relationship: "neutral" };
-    return `
-      <h3>${isEdit ? "Edit world" : "Add world"}</h3>
-      <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
-      <div class="dr-field">
-        <label>UWP</label>
-        <div class="dr-inline-field">
-          <input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C">
-          <button type="button" class="dr-icon-btn-square" data-dr-tm-lookup title="Look up on Traveller Map">&#128269;</button>
-        </div>
-      </div>
-      <div class="dr-tm-results" data-dr-tm-results></div>
-      <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
-      <div class="dr-field"><label>Controlling faction</label>${this._customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...this.trackerState.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
-      <div class="dr-field">
-        <label>Relationship</label>
-        ${this._customSelectHtml("data-w-relationship", WORLD_RELATIONSHIPS.map(r => ({ value: r.id, label: r.label })), w.relationship || "neutral")}
-      </div>
-      <p class="dr-card-meta" data-dr-relationship-effects>${this._relationshipEffectsText(w.relationship || "neutral")}</p>
-      <div class="dr-field"><label>Status</label><input type="text" list="dr-status-list" data-w-status value="${esc(w.status)}" placeholder="e.g. Contested">
-        <datalist id="dr-status-list">${WORLD_STATUS_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
-      </div>
-      <div class="dr-field"><label>Tags (comma separated)</label><input type="text" data-w-tags value="${esc(w.tags)}" placeholder="naval base, gas giant..."></div>
-      <div class="dr-field"><label>Notes</label><textarea data-w-notes placeholder="Key sites, contacts, events here...">${esc(w.notes)}</textarea></div>
-      ${w.sourceUuid ? `<div class="dr-card-meta">Linked document: <a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source</a></div>` : ""}
-      <div class="dr-drawer-actions">
-        <button type="button" class="dr-btn" data-dr-save-world="${isEdit ? w.id : ""}">Save</button>
-        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
-      </div>`;
-  }
-
-  _openDrawer(type, id) {
-    type = type || (this.currentTab === "factions" ? "faction" : this.currentTab === "contacts" ? "contact" : "world");
-    const content = this.root.querySelector("[data-dr-drawer-content]");
-    if (type === "faction") {
-      const f = id ? this.trackerState.factions.find(x => x.id === id) : null;
-      content.innerHTML = this._drawerFactionForm(f);
-    } else if (type === "contact") {
-      const c = id ? this.trackerState.contacts.find(x => x.id === id) : null;
-      content.innerHTML = this._drawerContactForm(c);
-    } else {
-      const w = id ? this.trackerState.worlds.find(x => x.id === id) : null;
-      content.innerHTML = this._drawerWorldForm(w);
-      // Editing an existing world saved before a UWP was known — look it up
-      // immediately rather than waiting for the GM to touch the Name field.
-      if (w && w.name && !w.uwp) this._lookupTravellerMap();
-    }
-    this.root.querySelector("[data-dr-overlay]").classList.add("open");
-    this.root.querySelector("[data-dr-drawer]").classList.add("open");
-  }
-
-  _closeDrawer() {
-    this.root.querySelector("[data-dr-overlay]").classList.remove("open");
-    this.root.querySelector("[data-dr-drawer]").classList.remove("open");
-    this._pendingActorUuid = null;
-    this._pendingSourceUuid = null;
-  }
-
-  // Shows a small dialog asking for an optional reason, used when logging a
-  // change to AC, Disposition, PRI, or Standing.
-  async _promptReason(title, summary) {
-    try {
-      const reason = await foundry.applications.api.DialogV2.prompt({
-        window: { title },
-        content: `
-          <div class="dr-field"><p class="dr-card-meta">${summary}</p></div>
-          <div class="dr-field"><label>Reason (optional)</label><textarea id="dr-reason-input" rows="3"></textarea></div>
-        `,
-        ok: {
-          label: "Log Change",
-          callback: (event, button) => button.form.querySelector("#dr-reason-input").value.trim()
-        },
-        rejectClose: false
-      });
-      return reason || "";
-    } catch (err) {
-      return "";
-    }
-  }
+  _relationshipEffectsText(id) { return relationshipEffectsText(id); }
 
   async _logChange(entityType, entityName, changes) {
     if (!changes.length) return;
     const summary = changes.map(c => `${esc(c.field)}: ${esc(String(c.from))} &rarr; ${esc(String(c.to))}`).join("<br>");
-    const reason = await this._promptReason(`Log reason — ${entityName}`, summary);
+    const reason = await promptReason(`Log reason — ${entityName}`, summary);
     this.trackerState.log = this.trackerState.log || [];
     this.trackerState.log.unshift({
       id: uid(),
@@ -981,74 +932,314 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     await this._saveData();
     if (this.currentTab === "log") this._renderContent();
   }
+}
 
-  async _saveFaction(id) {
-    const root = this.root;
-    const name = root.querySelector("[data-f-name]").value.trim();
-    if (!name) { ui.notifications.warn("Please enter a faction name."); return; }
-    const standingRaw = root.querySelector("[data-f-standing]").value.trim();
-    const standingBaselineRaw = root.querySelector("[data-f-standing-baseline]").value.trim();
-    const category = root.querySelector("[data-f-category]").value;
-    const data = {
-      name,
-      category,
-      disposition: root.querySelector("[data-f-disposition]").value,
-      contact: root.querySelector("[data-f-contact]").value.trim(),
-      standing: standingRaw === "" ? "" : Number(standingRaw),
-      standingBaseline: standingBaselineRaw === "" ? defaultStandingBaseline(category) : Number(standingBaselineRaw),
-      notes: root.querySelector("[data-f-notes]").value.trim(),
-      protected: root.querySelector("[data-f-protected]").checked,
-    };
-    let changes = [];
-    if (id) {
-      const idx = this.trackerState.factions.findIndex(x => x.id === id);
-      const prev = this.trackerState.factions[idx];
-      if (prev.disposition !== data.disposition) {
-        changes.push({ field: "Disposition", from: dispInfo(prev.disposition).label, to: dispInfo(data.disposition).label });
-      }
-      const prevStanding = typeof prev.standing === "number" ? prev.standing : null;
-      const nextStanding = typeof data.standing === "number" ? data.standing : null;
-      if (prevStanding !== nextStanding) {
-        changes.push({ field: "Standing", from: prevStanding ?? "—", to: nextStanding ?? "—" });
-        data.standingUpdatedDay = gameDayIndex();
-      }
-      this.trackerState.factions[idx] = { ...prev, ...data };
-    } else {
-      this.trackerState.factions.push({ id: uid(), standingUpdatedDay: gameDayIndex(), ...data });
-    }
-    await this._saveData();
-    this._closeDrawer();
-    this._renderContent();
-    if (changes.length) await this._logChange("Faction", name, changes);
+// ---------------------------------------------------------------------------
+// Per-entity window (faction/contact/world) — Add and Edit both happen here,
+// one instance per entity (registry above), replacing the old in-window
+// sliding drawer. See entityWindows/openEntityWindow/refreshOpenWindows.
+// ---------------------------------------------------------------------------
+class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
+  static DEFAULT_OPTIONS = {
+    classes: ["drinax-tracker-window", "drinax-entity-window"],
+    window: { resizable: true },
+    position: { width: 460, height: 640 }
+  };
+
+  constructor(entityType, entityId, prefill) {
+    super();
+    this.entityType = entityType; // "faction" | "contact" | "world"
+    this.entityId = entityId; // null while adding
+    this.prefill = prefill || null; // { name, actorUuid, sourceUuid, uwp, soc }
+    this._tmResults = null;
   }
 
-  async _saveContact(id) {
-    const root = this.root;
-    const name = root.querySelector("[data-c-name]").value.trim();
-    if (!name) { ui.notifications.warn("Please enter a contact name."); return; }
-    const socRaw = root.querySelector("[data-c-soc]").value.trim();
-    const data = {
-      name,
-      role: root.querySelector("[data-c-role]").value,
-      ac: root.querySelector("[data-c-ac]").value.trim(),
-      soc: socRaw === "" ? "" : Number(socRaw),
-      notes: root.querySelector("[data-c-notes]").value.trim(),
-    };
-    let changes = [];
-    if (id) {
-      const idx = this.trackerState.contacts.findIndex(x => x.id === id);
-      const prev = this.trackerState.contacts[idx];
-      if ((prev.ac || "") !== (data.ac || "")) {
-        changes.push({ field: "AC", from: prev.ac || "—", to: data.ac || "—" });
-      }
-      this.trackerState.contacts[idx] = { ...prev, ...data };
-    } else {
-      this.trackerState.contacts.push({ id: uid(), actorUuid: this._pendingActorUuid || null, ...data });
-    }
-    await this._saveData();
-    this._closeDrawer();
+  get id() { return `drinax-entity-${this.entityType}-${this.entityId || "new"}`; }
+
+  _plural() { return `${this.entityType}s`; }
+
+  _data() { return game.settings.get(MODULE_ID, "data") || seedData(); }
+
+  _entity() {
+    if (!this.entityId) return null;
+    const data = this._data();
+    return (data[this._plural()] || []).find(x => x.id === this.entityId) || null;
+  }
+
+  get title() {
+    const entity = this._entity();
+    return entity ? entity.name : `Add ${entityTypeLabel(this.entityType)}`;
+  }
+
+  async _renderHTML(context, options) {
+    return `<div id="drinax-root"><div class="dr-entity-window" data-dr-entity-content></div></div>`;
+  }
+
+  async _replaceHTML(result, content, options) {
+    content.innerHTML = result;
+  }
+
+  async _onRender(context, options) {
+    this.root = this.element.querySelector("#drinax-root");
+    this.root.classList.toggle("dr-standard-look", standardLookEnabled());
+    this._wireEvents();
     this._renderContent();
-    if (changes.length) await this._logChange("Contact", name, changes);
+  }
+
+  async close(options) {
+    if (this._outsideClickHandler) document.removeEventListener("click", this._outsideClickHandler);
+    entityWindows.delete(entityWindowKey(this.entityType, this.entityId));
+    return super.close(options);
+  }
+
+  _wireEvents() {
+    const root = this.root;
+
+    if (this._outsideClickHandler) document.removeEventListener("click", this._outsideClickHandler);
+    this._outsideClickHandler = (e) => {
+      if (!e.target.closest(".dr-select")) {
+        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+      }
+    };
+    document.addEventListener("click", this._outsideClickHandler);
+
+    root.addEventListener("click", (e) => {
+      const selectToggle = e.target.closest("[data-dr-select-toggle]");
+      if (selectToggle) {
+        const menu = selectToggle.nextElementSibling;
+        const wasOpen = menu.classList.contains("open");
+        root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+        if (!wasOpen) menu.classList.add("open");
+        return;
+      }
+
+      const selectOpt = e.target.closest("[data-dr-select-value]");
+      if (selectOpt) {
+        const wrapper = selectOpt.closest(".dr-select");
+        const hidden = wrapper.querySelector("input[type=hidden]");
+        const btn = wrapper.querySelector("[data-dr-select-toggle]");
+        hidden.value = selectOpt.dataset.drSelectValue;
+        btn.textContent = selectOpt.textContent;
+        wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === selectOpt));
+        wrapper.querySelector(".dr-select-menu").classList.remove("open");
+
+        if (hidden.hasAttribute("data-f-category")) {
+          const standingWrapper = root.querySelector("[data-f-standing-wrapper]");
+          if (standingWrapper) standingWrapper.style.display = STANDING_CATEGORIES.includes(hidden.value) ? "" : "none";
+        }
+        if (hidden.hasAttribute("data-w-faction")) this._recomputeWorldRelationshipDefault();
+        return;
+      }
+
+      const tmLookup = e.target.closest("[data-dr-tm-lookup]");
+      if (tmLookup) { this._lookupTravellerMap(); return; }
+
+      const tmResult = e.target.closest("[data-dr-tm-result]");
+      if (tmResult) { this._applyTravellerMapResult(Number(tmResult.dataset.drTmResult)); return; }
+
+      const insertLink = e.target.closest("[data-dr-insert-link]");
+      if (insertLink) { this._insertEntityLink(); return; }
+
+      const openEntity = e.target.closest("[data-dr-open-entity]");
+      if (openEntity) { e.preventDefault(); const [type, id] = openEntity.dataset.drOpenEntity.split(":"); openEntityWindow(type, id); return; }
+
+      const openActor = e.target.closest("[data-dr-open-actor]");
+      if (openActor) { e.preventDefault(); fromUuid(openActor.dataset.drOpenActor).then(doc => doc?.sheet?.render(true)); return; }
+
+      const openSource = e.target.closest("[data-dr-open-source]");
+      if (openSource) { e.preventDefault(); fromUuid(openSource.dataset.drOpenSource).then(doc => doc?.sheet?.render(true)); return; }
+
+      const save = e.target.closest("[data-dr-save]");
+      if (save) { this._save(); return; }
+
+      const del = e.target.closest("[data-dr-delete]");
+      if (del) { deleteEntity(this.entityType, this.entityId); return; }
+
+      const cancel = e.target.closest("[data-dr-cancel]");
+      if (cancel) { this.close(); return; }
+
+      root.querySelectorAll(".dr-select-menu.open").forEach(m => m.classList.remove("open"));
+    });
+
+    // Live Asset Value recalculation as SOC changes, and live
+    // Relationship-default recalculation as a world's UWP is typed.
+    root.addEventListener("input", (e) => {
+      if (e.target.matches("[data-c-soc]")) {
+        const avField = root.querySelector("[data-c-av]");
+        if (avField) {
+          const av = calcAV(e.target.value);
+          avField.value = av === "" ? "" : av;
+        }
+      }
+      if (e.target.matches("[data-w-uwp]")) this._recomputeWorldRelationshipDefault();
+    });
+
+    // Auto-lookup on Traveller Map once a world Name is entered, if UWP is
+    // still blank. Uses focusout (bubbles), since blur does not. Also
+    // recomputes the Relationship default, since Drinax/Theev are named
+    // special cases that apply even when UWP is already known.
+    root.addEventListener("focusout", (e) => {
+      if (e.target.matches("[data-w-name]")) {
+        const uwpField = root.querySelector("[data-w-uwp]");
+        if (e.target.value.trim() && uwpField && !uwpField.value.trim()) this._lookupTravellerMap();
+        this._recomputeWorldRelationshipDefault();
+      }
+    });
+  }
+
+  _renderContent() {
+    const titleEl = this.element?.querySelector(".window-title");
+    if (titleEl) titleEl.textContent = this.title;
+    const content = this.root.querySelector("[data-dr-entity-content]");
+    const entity = this._entity();
+    const data = this._data();
+    if (this.entityType === "faction") content.innerHTML = this._factionForm(entity);
+    else if (this.entityType === "contact") content.innerHTML = this._contactForm(entity, data);
+    else content.innerHTML = this._worldForm(entity, data);
+    // Editing an existing world saved before a UWP was known, or adding one
+    // from a drop/prefill that didn't resolve a UWP — look it up immediately
+    // rather than waiting for a name-field blur.
+    if (this.entityType === "world") {
+      const name = entity?.name || this.prefill?.name;
+      const uwp = entity?.uwp || this.prefill?.uwp;
+      if (name && !uwp) this._lookupTravellerMap();
+    }
+  }
+
+  _factionForm(f) {
+    const isEdit = !!f;
+    f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "", standing: "", protected: false };
+    const showStanding = STANDING_CATEGORIES.includes(f.category);
+    return `
+      <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
+      <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
+      <div class="dr-field"><label>Category</label>${customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
+      <div class="dr-field"><label>Disposition toward the party</label>${customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
+      <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
+      <div data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}">
+        <div class="dr-field"><label>Standing</label><input type="number" data-f-standing value="${f.standing === "" || f.standing === null || f.standing === undefined ? "" : f.standing}" placeholder="e.g. -5"></div>
+        <div class="dr-field"><label>Standing reverts toward (baseline)</label><input type="number" data-f-standing-baseline value="${f.standingBaseline === "" || f.standingBaseline === null || f.standingBaseline === undefined ? defaultStandingBaseline(f.category) : f.standingBaseline}" placeholder="e.g. 0"></div>
+        <p class="dr-card-meta">Standing drifts 1 point toward the baseline for every 30 in-game days elapsed.</p>
+      </div>
+      <div class="dr-field">
+        <label>Notes</label>
+        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
+        <prose-mirror name="notes" data-f-notes value="${esc(notesToEditableHtml(f.notes))}" editable="true"></prose-mirror>
+      </div>
+      <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
+      <div class="dr-drawer-actions">
+        <button type="button" class="dr-btn" data-dr-save>Save</button>
+        ${isEdit && !f.protected ? `<button type="button" class="dr-icon-btn danger" data-dr-delete>Delete</button>` : ""}
+        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
+      </div>`;
+  }
+
+  _contactForm(c, data) {
+    const isEdit = !!c;
+    c = c || {
+      role: "contact", name: this.prefill?.name || "", ac: "",
+      soc: this.prefill?.soc ?? "", location: "", notes: "",
+      actorUuid: this.prefill?.actorUuid || null
+    };
+    const av = calcAV(c.soc);
+    const locationItems = [{ value: "", label: "Unspecified" }, ...data.worlds.map(w => ({ value: w.id, label: w.name }))];
+    return `
+      <h3>${isEdit ? "Edit contact" : "Add contact"}</h3>
+      <div class="dr-field"><label>Name</label><input type="text" data-c-name value="${esc(c.name)}" placeholder="e.g. Baron Nakamura"></div>
+      <div class="dr-field"><label>Role</label>${customSelectHtml("data-c-role", CONTACT_ROLES.map(r => ({ value: r.id, label: r.label })), c.role)}</div>
+      <div class="dr-field"><label>Allegiance Code (AC)</label><input type="text" list="dr-ac-list" data-c-ac value="${esc(c.ac)}" placeholder="e.g. Dr">
+        <datalist id="dr-ac-list">${ALLEGIANCE_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
+      </div>
+      <div class="dr-field"><label>Social Standing (SOC)</label><input type="number" data-c-soc value="${c.soc === "" || c.soc === null || c.soc === undefined ? "" : c.soc}" placeholder="e.g. 9"></div>
+      <div class="dr-field"><label>Asset Value (AV = SOC&sup3;)</label><input type="text" class="dr-field-readonly" data-c-av value="${av === "" ? "" : av}" readonly tabindex="-1"></div>
+      <div class="dr-field"><label>Location</label>${customSelectHtml("data-c-location", locationItems, c.location || "")}</div>
+      <div class="dr-field">
+        <label>Notes</label>
+        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
+        <prose-mirror name="notes" data-c-notes value="${esc(notesToEditableHtml(c.notes))}" editable="true"></prose-mirror>
+      </div>
+      ${c.actorUuid ? `<div class="dr-card-meta">Linked actor: <a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open sheet</a></div>` : ""}
+      <div class="dr-drawer-actions">
+        <button type="button" class="dr-btn" data-dr-save>Save</button>
+        ${isEdit ? `<button type="button" class="dr-icon-btn danger" data-dr-delete>Delete</button>` : ""}
+        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
+      </div>`;
+  }
+
+  _worldForm(w, data) {
+    const isEdit = !!w;
+    w = w || {
+      name: this.prefill?.name || "", uwp: this.prefill?.uwp || "", location: "",
+      faction: "", status: "", tags: "", notes: "", relationship: "neutral",
+      sourceUuid: this.prefill?.sourceUuid || null
+    };
+    const linkedContacts = isEdit ? data.contacts.filter(c => c.location === w.id) : [];
+    return `
+      <h3>${isEdit ? "Edit world" : "Add world"}</h3>
+      <div class="dr-field"><label>Name</label><input type="text" data-w-name value="${esc(w.name)}" placeholder="e.g. Cutlass"></div>
+      <div class="dr-field">
+        <label>UWP</label>
+        <div class="dr-inline-field">
+          <input type="text" class="mono" data-w-uwp value="${esc(w.uwp)}" placeholder="e.g. A788899-C">
+          <button type="button" class="dr-icon-btn-square" data-dr-tm-lookup title="Look up on Traveller Map">&#128269;</button>
+        </div>
+      </div>
+      <div class="dr-tm-results" data-dr-tm-results></div>
+      <div class="dr-field"><label>Location (hex / subsector)</label><input type="text" data-w-location value="${esc(w.location)}" placeholder="e.g. 1907 Drinax"></div>
+      <div class="dr-field"><label>Controlling faction</label>${customSelectHtml("data-w-faction", [{ value: "", label: "Unclaimed / independent" }, ...data.factions.map(f => ({ value: f.id, label: f.name }))], w.faction || "")}</div>
+      <div class="dr-field">
+        <label>Relationship</label>
+        ${customSelectHtml("data-w-relationship", WORLD_RELATIONSHIPS.map(r => ({ value: r.id, label: r.label })), w.relationship || "neutral")}
+      </div>
+      <p class="dr-card-meta" data-dr-relationship-effects>${relationshipEffectsText(w.relationship || "neutral")}</p>
+      <div class="dr-field"><label>Status</label><input type="text" list="dr-status-list" data-w-status value="${esc(w.status)}" placeholder="e.g. Contested">
+        <datalist id="dr-status-list">${WORLD_STATUS_SUGGESTIONS.map(s => `<option value="${esc(s)}">`).join("")}</datalist>
+      </div>
+      <div class="dr-field"><label>Tags (comma separated)</label><input type="text" data-w-tags value="${esc(w.tags)}" placeholder="naval base, gas giant..."></div>
+      ${linkedContacts.length ? `<div class="dr-field"><label>Contacts here</label><div class="dr-card-meta">${linkedContacts.map(c => `<a href="#" data-dr-open-entity="contact:${c.id}">${esc(c.name)}</a>`).join(", ")}</div></div>` : ""}
+      <div class="dr-field">
+        <label>Notes</label>
+        <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
+        <prose-mirror name="notes" data-w-notes value="${esc(notesToEditableHtml(w.notes))}" editable="true"></prose-mirror>
+      </div>
+      ${w.sourceUuid ? `<div class="dr-card-meta">Linked document: <a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source</a></div>` : ""}
+      <div class="dr-drawer-actions">
+        <button type="button" class="dr-btn" data-dr-save>Save</button>
+        ${isEdit ? `<button type="button" class="dr-icon-btn danger" data-dr-delete>Delete</button>` : ""}
+        <button type="button" class="dr-btn dr-btn-ghost" data-dr-cancel>Cancel</button>
+      </div>`;
+  }
+
+  // Appends "@Drinax[type:id]{Name}" as a new paragraph at the end of the
+  // notes editor's current content — inserting at the live cursor position
+  // instead would need reaching into the <prose-mirror> element's internal
+  // ProseMirror EditorView, which isn't worth the risk without confirming
+  // its exact behavior live first (see this module's own notes on other
+  // Foundry editor-API assumptions needing a live check).
+  async _insertEntityLink() {
+    const data = this._data();
+    const options = [
+      ...data.factions.map(x => ({ value: `faction:${x.id}`, label: `Faction — ${x.name}` })),
+      ...data.contacts.map(x => ({ value: `contact:${x.id}`, label: `Contact — ${x.name}` })),
+      ...data.worlds.map(x => ({ value: `world:${x.id}`, label: `World — ${x.name}` }))
+    ].filter(o => o.value !== `${this.entityType}:${this.entityId}`);
+    if (!options.length) { ui.notifications.warn("Nothing else to link to yet."); return; }
+    const picked = await foundry.applications.api.DialogV2.prompt({
+      window: { title: "Link to Entity" },
+      content: `<div class="dr-field"><label>Entity</label><select id="dr-link-pick">${options.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("")}</select></div>`,
+      ok: {
+        label: "Insert Link",
+        callback: (event, button) => button.form.querySelector("#dr-link-pick").value
+      },
+      rejectClose: false
+    }).catch(() => null);
+    if (!picked) return;
+    const [type, entId] = picked.split(":");
+    const entity = findEntity(type, entId);
+    const notesEl = this.root.querySelector("prose-mirror");
+    if (!notesEl || !entity) return;
+    const tag = `<p>@Drinax[${type}:${entId}]{${esc(entity.name)}}</p>`;
+    notesEl.value = (notesEl.value || "") + tag;
   }
 
   async _lookupTravellerMap() {
@@ -1090,19 +1281,19 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 
   // Recomputes the suggested Relationship for a world that hasn't been saved
-  // yet (i.e. the drawer is in "Add" mode) — Save button carries no id in
-  // that case. Never touches an existing world's already-set Relationship.
+  // yet (i.e. this window is in "Add" mode). Never touches an existing
+  // world's already-set Relationship.
   _recomputeWorldRelationshipDefault() {
-    const saveBtn = this.root.querySelector("[data-dr-save-world]");
-    if (!saveBtn || saveBtn.dataset.drSaveWorld) return;
+    if (this.entityId) return;
     const name = this.root.querySelector("[data-w-name]")?.value || "";
     const uwp = this.root.querySelector("[data-w-uwp]")?.value || "";
     const factionId = this.root.querySelector("[data-w-faction]")?.value || "";
-    const faction = this.trackerState.factions.find(f => f.id === factionId);
+    const data = this._data();
+    const faction = data.factions.find(f => f.id === factionId);
     const relationship = defaultWorldRelationship({ name, factionCategory: faction?.category, uwp });
     this._setCustomSelectValue("data-w-relationship", relationship);
     const effectsEl = this.root.querySelector("[data-dr-relationship-effects]");
-    if (effectsEl) effectsEl.innerHTML = this._relationshipEffectsText(relationship);
+    if (effectsEl) effectsEl.innerHTML = relationshipEffectsText(relationship);
   }
 
   async _applyTravellerMapResult(idx) {
@@ -1131,7 +1322,8 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         else if (allegiance.startsWith("Im")) targetCategory = "imperium";
       }
       if (targetCategory) {
-        const faction = this.trackerState.factions.find(f => f.category === targetCategory);
+        const data = this._data();
+        const faction = data.factions.find(f => f.category === targetCategory);
         if (faction) this._setCustomSelectValue("data-w-faction", faction.id);
       }
     }
@@ -1139,11 +1331,101 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     this._recomputeWorldRelationshipDefault();
   }
 
-  async _saveWorld(id) {
+  async _save() {
+    if (this.entityType === "faction") await this._saveFaction();
+    else if (this.entityType === "contact") await this._saveContact();
+    else await this._saveWorld();
+  }
+
+  async _saveFaction() {
+    const root = this.root;
+    const name = root.querySelector("[data-f-name]").value.trim();
+    if (!name) { ui.notifications.warn("Please enter a faction name."); return; }
+    const standingRaw = root.querySelector("[data-f-standing]").value.trim();
+    const standingBaselineRaw = root.querySelector("[data-f-standing-baseline]").value.trim();
+    const category = root.querySelector("[data-f-category]").value;
+    const fdata = {
+      name,
+      category,
+      disposition: root.querySelector("[data-f-disposition]").value,
+      contact: root.querySelector("[data-f-contact]").value.trim(),
+      standing: standingRaw === "" ? "" : Number(standingRaw),
+      standingBaseline: standingBaselineRaw === "" ? defaultStandingBaseline(category) : Number(standingBaselineRaw),
+      notes: root.querySelector("[data-f-notes]").value || "",
+      protected: root.querySelector("[data-f-protected]").checked,
+    };
+    const data = this._data();
+    data.factions = data.factions || [];
+    let changes = [];
+    if (this.entityId) {
+      const idx = data.factions.findIndex(x => x.id === this.entityId);
+      const prev = data.factions[idx];
+      if (prev.disposition !== fdata.disposition) {
+        changes.push({ field: "Disposition", from: dispInfo(prev.disposition).label, to: dispInfo(fdata.disposition).label });
+      }
+      const prevStanding = typeof prev.standing === "number" ? prev.standing : null;
+      const nextStanding = typeof fdata.standing === "number" ? fdata.standing : null;
+      if (prevStanding !== nextStanding) {
+        changes.push({ field: "Standing", from: prevStanding ?? "—", to: nextStanding ?? "—" });
+        fdata.standingUpdatedDay = gameDayIndex();
+      }
+      data.factions[idx] = { ...prev, ...fdata };
+    } else {
+      this.entityId = uid();
+      data.factions.push({ id: this.entityId, standingUpdatedDay: gameDayIndex(), ...fdata });
+    }
+    await game.settings.set(MODULE_ID, "data", data);
+    refreshOpenWindows();
+    this.close();
+    if (changes.length) {
+      const data2 = this._data();
+      await logChange(data2, "Faction", name, changes);
+      await game.settings.set(MODULE_ID, "data", data2);
+      refreshOpenWindows();
+    }
+  }
+
+  async _saveContact() {
+    const root = this.root;
+    const name = root.querySelector("[data-c-name]").value.trim();
+    if (!name) { ui.notifications.warn("Please enter a contact name."); return; }
+    const socRaw = root.querySelector("[data-c-soc]").value.trim();
+    const cdata = {
+      name,
+      role: root.querySelector("[data-c-role]").value,
+      ac: root.querySelector("[data-c-ac]").value.trim(),
+      soc: socRaw === "" ? "" : Number(socRaw),
+      location: root.querySelector("[data-c-location]").value || "",
+      notes: root.querySelector("[data-c-notes]").value || "",
+    };
+    const data = this._data();
+    data.contacts = data.contacts || [];
+    let changes = [];
+    if (this.entityId) {
+      const idx = data.contacts.findIndex(x => x.id === this.entityId);
+      const prev = data.contacts[idx];
+      if ((prev.ac || "") !== (cdata.ac || "")) changes.push({ field: "AC", from: prev.ac || "—", to: cdata.ac || "—" });
+      data.contacts[idx] = { ...prev, ...cdata };
+    } else {
+      this.entityId = uid();
+      data.contacts.push({ id: this.entityId, actorUuid: this.prefill?.actorUuid || null, ...cdata });
+    }
+    await game.settings.set(MODULE_ID, "data", data);
+    refreshOpenWindows();
+    this.close();
+    if (changes.length) {
+      const data2 = this._data();
+      await logChange(data2, "Contact", name, changes);
+      await game.settings.set(MODULE_ID, "data", data2);
+      refreshOpenWindows();
+    }
+  }
+
+  async _saveWorld() {
     const root = this.root;
     const name = root.querySelector("[data-w-name]").value.trim();
     if (!name) { ui.notifications.warn("Please enter a world name."); return; }
-    const data = {
+    const wdata = {
       name,
       uwp: root.querySelector("[data-w-uwp]").value.trim(),
       location: root.querySelector("[data-w-location]").value.trim(),
@@ -1151,57 +1433,21 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       relationship: root.querySelector("[data-w-relationship]").value || "neutral",
       status: root.querySelector("[data-w-status]").value.trim(),
       tags: root.querySelector("[data-w-tags]").value.trim(),
-      notes: root.querySelector("[data-w-notes]").value.trim(),
+      notes: root.querySelector("[data-w-notes]").value || "",
     };
-    if (id) {
-      const idx = this.trackerState.worlds.findIndex(x => x.id === id);
-      this.trackerState.worlds[idx] = { ...this.trackerState.worlds[idx], ...data };
+    const data = this._data();
+    data.worlds = data.worlds || [];
+    if (this.entityId) {
+      const idx = data.worlds.findIndex(x => x.id === this.entityId);
+      data.worlds[idx] = { ...data.worlds[idx], ...wdata };
     } else {
-      this.trackerState.worlds.push({ id: uid(), sourceUuid: this._pendingSourceUuid || null, ...data });
+      this.entityId = uid();
+      data.worlds.push({ id: this.entityId, sourceUuid: this.prefill?.sourceUuid || null, ...wdata });
     }
-    await this._saveData();
-    this._closeDrawer();
-    this._renderContent();
+    await game.settings.set(MODULE_ID, "data", data);
+    refreshOpenWindows();
+    this.close();
   }
-
-  async _delete(type, id) {
-    const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Delete entry" },
-      content: "<p>Delete this entry? This cannot be undone.</p>"
-    });
-    if (!ok) return;
-    if (type === "faction") {
-      this.trackerState.factions = this.trackerState.factions.filter(x => x.id !== id);
-      this.trackerState.worlds.forEach(w => { if (w.faction === id) w.faction = null; });
-    } else if (type === "contact") {
-      this.trackerState.contacts = this.trackerState.contacts.filter(x => x.id !== id);
-    } else {
-      this.trackerState.worlds = this.trackerState.worlds.filter(x => x.id !== id);
-    }
-    await this._saveData();
-    this._renderContent();
-  }
-}
-
-// Shared by the settings-menu entry below and the "/drinax-reset" chat
-// command (see the chatMessage hook near the bottom of this file) — both
-// are just different ways to trigger the same confirm-then-reset flow.
-async function resetTrackerData() {
-  const ok = await foundry.applications.api.DialogV2.confirm({
-    window: { title: "Reset Drinax Tracker Data" },
-    content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
-  });
-  if (!ok) return;
-  const data = seedData();
-  await game.settings.set(MODULE_ID, "data", data);
-  const app = game.modules.get(MODULE_ID)?.app;
-  if (app?.rendered) {
-    app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
-    const priInput = app.root.querySelector("[data-dr-pri]");
-    if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
-    app._renderContent();
-  }
-  ui.notifications.info("Drinax Tracker data has been reset.");
 }
 
 // Reset is deliberately tucked away in Foundry's Configure Settings screen
@@ -1213,6 +1459,28 @@ async function resetTrackerData() {
 // a confirm dialog instead of ever opening an actual form window. Built on
 // ApplicationV2 (not the deprecated FormApplication) for the same reason as
 // DrinaxTrackerApp above.
+//
+// Shared by the settings-menu entry below and the "/drinax-reset" chat
+// command (see the chatMessage hook near the bottom of this file) — both
+// are just different ways to trigger the same confirm-then-reset flow.
+async function resetTrackerData() {
+  const ok = await foundry.applications.api.DialogV2.confirm({
+    window: { title: "Reset Drinax Tracker Data" },
+    content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
+  });
+  if (!ok) return;
+  const data = seedData();
+  await game.settings.set(MODULE_ID, "data", data);
+  // Every open entity window points at data that no longer exists after a
+  // full reset — close them all rather than leaving them showing stale ids.
+  for (const win of Array.from(entityWindows.values())) {
+    if (win.rendered) win.close();
+  }
+  entityWindows.clear();
+  refreshOpenWindows();
+  ui.notifications.info("Drinax Tracker data has been reset.");
+}
+
 class DrinaxResetMenu extends foundry.applications.api.ApplicationV2 {
   static DEFAULT_OPTIONS = { id: "drinax-tracker-reset-menu", window: { title: "Reset Drinax Tracker Data" } };
 
@@ -1225,9 +1493,9 @@ class DrinaxResetMenu extends foundry.applications.api.ApplicationV2 {
 // "Use Standard Foundry Styling" — off by default, so nothing changes for
 // existing worlds until a GM opts in. When on, the window's custom dark/
 // gold theme is replaced with the browser/OS's own system colors and the
-// default UI font (see the "dr-standard-look" CSS block in tracker.hbs),
-// approximating Foundry's own native look rather than reproducing it
-// pixel-for-pixel.
+// default UI font (see the "dr-standard-look" CSS block in
+// styles/drinax-tracker.css), approximating Foundry's own native look
+// rather than reproducing it pixel-for-pixel.
 function standardLookEnabled() {
   try { return !!game.settings.get(MODULE_ID, "standardLook"); } catch (err) { return false; }
 }
@@ -1251,6 +1519,9 @@ Hooks.once("init", () => {
     onChange: () => {
       const app = game.modules.get(MODULE_ID)?.app;
       if (app?.rendered) app.root?.classList.toggle("dr-standard-look", standardLookEnabled());
+      for (const win of entityWindows.values()) {
+        if (win.rendered) win.root?.classList.toggle("dr-standard-look", standardLookEnabled());
+      }
     }
   });
 
@@ -1261,6 +1532,36 @@ Hooks.once("init", () => {
     icon: "fa-solid fa-rotate-left",
     type: DrinaxResetMenu,
     restricted: true
+  });
+
+  // Custom "@Drinax[type:id]{Label}" content-link syntax, so a Notes editor
+  // can link to another faction/contact/world (these aren't real Foundry
+  // documents, so they can't use the native "@UUID[...]" syntax) — a real,
+  // documented v13 mechanism (CONFIG.TextEditor.enrichers), confirmed
+  // against a live system's own usage of it while planning this feature.
+  // onRender fires once the enriched element is actually in the DOM, so the
+  // click handler always has something real to attach to.
+  CONFIG.TextEditor.enrichers.push({
+    id: "drinax-link",
+    pattern: /@Drinax\[(faction|contact|world):([^\]]+)\](?:\{([^}]+)\})?/g,
+    enricher: async (match) => {
+      const [, type, entId, label] = match;
+      const entity = findEntity(type, entId);
+      const a = document.createElement("a");
+      a.className = "content-link drinax-link";
+      a.dataset.drOpenEntity = `${type}:${entId}`;
+      a.innerHTML = `<i class="fa-solid ${entityIcon(type)}"></i>${esc(label || entity?.name || "Unknown")}`;
+      return a;
+    },
+    onRender: (element) => {
+      element.querySelectorAll(".drinax-link").forEach(a => {
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          const [type, entId] = a.dataset.drOpenEntity.split(":");
+          openEntityWindow(type, entId);
+        });
+      });
+    }
   });
 });
 
@@ -1280,45 +1581,32 @@ Hooks.once("ready", () => {
   if (game.user.isGM) checkStandingDriftAndPersist();
 });
 
-// Re-check Standing drift whenever the GM advances the mgt2e campaign date,
-// so it stays current even if nobody has the tracker open.
+// Re-check Standing drift whenever the GM advances the mgt2e campaign date —
+// so it stays current even if nobody has the tracker open when a drift
+// threshold is crossed.
 Hooks.on("updateSetting", (setting) => {
   if (setting.key === "mgt2e.currentYear" || setting.key === "mgt2e.currentDay") {
     checkStandingDriftAndPersist();
   }
 });
 
-// Keep an open tracker window in sync when the shared data changes from
-// elsewhere — a co-GM saving on their own session, or this same client's
-// own save. Without this, a window left open would silently work from an
-// increasingly stale copy, and its next save would overwrite whatever the
-// other GM had just saved (the whole data blob is written on every save,
-// not a merge). This doesn't touch the edit drawer, so an in-progress edit
-// there is preserved even if the background list refreshes under it.
+// Live-sync: refresh the main tracker window, plus every open entity window,
+// when the underlying data changes from elsewhere — a co-GM saving on their
+// own session, or this same client's own save. Without this, a window left
+// open would silently work from an increasingly stale copy, and its next
+// save would overwrite whatever the other GM had just saved (the whole data
+// blob is written on every save, not a merge).
 Hooks.on("updateSetting", (setting) => {
   if (setting.key !== `${MODULE_ID}.data`) return;
-  const app = game.modules.get(MODULE_ID)?.app;
-  if (!app?.rendered) return;
-  const data = game.settings.get(MODULE_ID, "data");
-  if (!data) return;
-  app.trackerState = {
-    factions: data.factions || [],
-    contacts: data.contacts || [],
-    worlds: data.worlds || [],
-    pri: data.pri ?? "",
-    log: data.log || []
-  };
-  const priInput = app.root?.querySelector("[data-dr-pri]");
-  if (priInput) priInput.value = app.trackerState.pri === "" ? "" : app.trackerState.pri;
-  app._renderContent();
+  refreshOpenWindows();
 });
 
 // "/drinax-reset" chat command — Foundry has no built-in slash-command
-// framework, so this hooks the raw chat entry box directly. Returning
-// false from "chatMessage" stops Foundry from posting the text as a normal
-// chat message; any other input is left completely alone (returning true)
-// so this can never interfere with real chat, rolls, or other modules'
-// own commands.
+// framework, so this hooks the raw chat entry box directly. Returning false
+// from "chatMessage" stops Foundry from posting the text as a normal chat
+// message; any other input is left completely alone (returning true) so
+// this can never interfere with real chat, rolls, or other modules' own
+// commands.
 Hooks.on("chatMessage", (chatLog, message) => {
   if (message.trim().toLowerCase() !== "/drinax-reset") return true;
   if (!game.user.isGM) {

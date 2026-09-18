@@ -1,0 +1,488 @@
+/* Moved out of tracker.hbs's inline <style> tag (2026-09) so the same rules
+   also apply to DrinaxEntityWindow's own windows — a <style> tag injected
+   via one ApplicationV2 window's innerHTML applies globally to the whole
+   page for as long as that window stays open, but an entity window must
+   still look right even when the main tracker window isn't currently open
+   (e.g. reopened later, or opened directly via a @Drinax[...] link/macro),
+   so this needs to be a real module stylesheet (declared in module.json),
+   not markup-dependent. */
+#drinax-root {
+  color-scheme: dark;
+  --bg: #0b0f17;
+  --panel: #141b28;
+  --panel-alt: #1b2432;
+  --border: #2b3548;
+  --text: #dfe4ec;
+  --text-muted: #8892a3;
+  --gold: #c9a24a;
+  --red: #c1443c;
+  --orange: #d98b3f;
+  --teal: #4fb0a6;
+  --slate: #8a90a0;
+  --imperium: #5b7fa6;
+  --aslan: #bf6a3f;
+  --pirate: #a33d3d;
+  --other: #5c8a86;
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+#drinax-root * { box-sizing: border-box; }
+
+/* "Use Standard Foundry Styling" world setting (off by default) — swaps
+   the custom dark/gold theme's CHROME variables (background/panels/
+   borders/text) for CSS system-color keywords (Canvas/CanvasText/Field/
+   etc.), which track the user's actual OS/browser light-dark scheme
+   without hardcoding a second fixed palette or depending on any specific
+   Foundry core CSS variable name. The per-category accent colors (Aslan
+   orange, Imperium blue, etc.) are left alone — they carry meaning, not
+   just decoration. Also resets every element to the default UI font and
+   a much smaller border radius, so it reads as "plain" rather than
+   themed. */
+#drinax-root.dr-standard-look {
+  color-scheme: light dark;
+  --bg: Canvas;
+  --panel: Field;
+  --panel-alt: Field;
+  --border: GrayText;
+  --text: CanvasText;
+  --text-muted: GrayText;
+  --gold: Highlight;
+}
+#drinax-root.dr-standard-look * {
+  font-family: inherit !important;
+  border-radius: 3px !important;
+}
+#drinax-root.dr-standard-look .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace !important; }
+#drinax-root .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+
+#drinax-root .dr-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+}
+#drinax-root .dr-title {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+#drinax-root .dr-title span { color: var(--gold); }
+#drinax-root .dr-subtitle {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+#drinax-root .dr-summary {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#drinax-root .dr-summary-chip {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 3px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+#drinax-root .dr-summary-chip b { color: var(--text); font-weight: 700; }
+
+#drinax-root .dr-tabs {
+  margin-top: 16px;
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+#drinax-root .dr-tab {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  padding: 8px 4px;
+  margin-right: 20px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+#drinax-root .dr-tab:hover { color: var(--text); }
+#drinax-root .dr-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+#drinax-root .dr-toolbar {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+#drinax-root .dr-search {
+  flex: 1 1 160px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 12.5px;
+}
+#drinax-root .dr-search:focus { outline: none; border-color: var(--gold); }
+#drinax-root .dr-btn {
+  font-family: inherit;
+  background: var(--gold);
+  color: #14100a;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#drinax-root .dr-btn:hover { filter: brightness(1.08); }
+#drinax-root .dr-btn-ghost {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+#drinax-root .dr-btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
+
+#drinax-root .dr-filters {
+  margin-top: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+#drinax-root .dr-filter-chip {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+#drinax-root .dr-filter-chip.active { border-color: currentColor; }
+
+#drinax-root .dr-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px;
+}
+
+#drinax-root .dr-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--cat-color, var(--border));
+  border-radius: 5px;
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  cursor: pointer;
+}
+#drinax-root .dr-card:hover { border-color: var(--gold); }
+#drinax-root .dr-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+#drinax-root .dr-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.3;
+}
+#drinax-root .dr-card-tag {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 10px;
+  color: var(--cat-color, var(--text-muted));
+  white-space: nowrap;
+}
+#drinax-root .dr-badge {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  width: fit-content;
+}
+#drinax-root .dr-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--dot-color, var(--slate));
+  flex-shrink: 0;
+}
+#drinax-root .dr-card-uwp {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--gold);
+}
+#drinax-root .dr-card-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+#drinax-root .dr-card-meta a { color: var(--gold); cursor: pointer; }
+#drinax-root .dr-card-notes {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+  margin: 0;
+}
+#drinax-root .dr-card-notes p:first-child { margin-top: 0; }
+#drinax-root .dr-card-notes p:last-child { margin-bottom: 0; }
+#drinax-root .dr-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+#drinax-root .dr-tag-pill {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 9px;
+  background: var(--panel-alt);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+#drinax-root .dr-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+#drinax-root .dr-icon-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  cursor: pointer;
+  padding: 2px 0;
+}
+#drinax-root .dr-icon-btn:hover { color: var(--text); }
+#drinax-root .dr-icon-btn.danger:hover { color: var(--red); }
+
+#drinax-root .dr-empty {
+  margin: 30px auto;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+/* Per-entity window content (DrinaxEntityWindow) — same field styling the
+   old sliding drawer used, just as a whole window's content instead of a
+   panel sliding over the list. */
+#drinax-root .dr-entity-window { padding: 2px; }
+#drinax-root .dr-entity-window h3 {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 15px;
+  margin: 0 0 14px;
+  color: var(--gold);
+}
+#drinax-root .dr-field { margin-bottom: 12px; }
+#drinax-root .dr-field label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+#drinax-root .dr-field input,
+#drinax-root .dr-field textarea,
+#drinax-root .dr-field select {
+  width: 100%;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 9px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+#drinax-root .dr-field textarea { resize: vertical; min-height: 60px; }
+
+/* Rich-text Notes editor (Foundry's own <prose-mirror> custom element) */
+#drinax-root .dr-notes-toolbar { margin-bottom: 6px; }
+#drinax-root prose-mirror {
+  display: block;
+  min-height: 140px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* Custom @Drinax[...] entity-link content links, rendered by the enricher
+   registered in the init hook. Reuses Foundry's own ".content-link" class
+   for baseline appearance, this just accents it to match the theme. */
+#drinax-root .drinax-link,
+.drinax-link {
+  color: var(--gold, #c9a24a);
+}
+#drinax-root .drinax-link i,
+.drinax-link i {
+  margin-right: 4px;
+}
+
+/* Custom dropdown, used instead of a native <select> so its colors are
+   never overridden by the OS's native combo-box theming. */
+#drinax-root .dr-select { position: relative; }
+#drinax-root .dr-filter-select { min-width: 170px; }
+#drinax-root .dr-select-btn {
+  width: 100%;
+  text-align: left;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 30px 7px 9px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  position: relative;
+}
+#drinax-root .dr-select-btn::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 45%;
+  width: 6px; height: 6px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: translateY(-50%) rotate(45deg);
+}
+#drinax-root .dr-select-btn:hover { border-color: var(--text-muted); }
+#drinax-root .dr-select-btn:focus { outline: none; border-color: var(--gold); }
+#drinax-root .dr-select-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0; right: 0;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 50;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+}
+#drinax-root .dr-select-menu.open { display: block; }
+#drinax-root .dr-select-opt {
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+#drinax-root .dr-select-opt:hover { background: var(--panel); }
+#drinax-root .dr-select-opt.selected { color: var(--gold); }
+
+#drinax-root .dr-field input:focus,
+#drinax-root .dr-field textarea:focus {
+  outline: none; border-color: var(--gold);
+}
+#drinax-root .dr-field-readonly {
+  color: var(--text-muted) !important;
+  cursor: default;
+}
+#drinax-root .dr-drawer-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+#drinax-root .dr-pri-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#drinax-root .dr-pri-row label {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+#drinax-root .dr-pri-row input {
+  width: 55px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--gold);
+  font-weight: 700;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+#drinax-root .dr-pri-row input:focus { outline: none; border-color: var(--gold); }
+#drinax-root .dr-pri-btn {
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+#drinax-root .dr-pri-btn:hover { color: var(--gold); border-color: var(--gold); }
+
+#drinax-root .dr-field-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+#drinax-root .dr-field-checkbox input { width: auto; }
+
+#drinax-root .dr-inline-field { display: flex; gap: 6px; }
+#drinax-root .dr-inline-field input { flex: 1; min-width: 0; }
+#drinax-root .dr-icon-btn-square {
+  flex-shrink: 0;
+  width: 32px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+}
+#drinax-root .dr-icon-btn-square:hover { border-color: var(--gold); color: var(--gold); }
+
+#drinax-root .dr-tm-results {
+  margin: -6px 0 12px;
+}
+#drinax-root .dr-tm-result {
+  padding: 7px 9px;
+  margin-bottom: 4px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+#drinax-root .dr-tm-result:hover { border-color: var(--gold); }
