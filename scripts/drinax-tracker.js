@@ -952,6 +952,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     this.entityId = entityId; // null while adding
     this.prefill = prefill || null; // { name, actorUuid, sourceUuid, uwp, soc }
     this._tmResults = null;
+    this._notesEditor = null;
   }
 
   get id() { return `drinax-entity-${this.entityType}-${this.entityId || "new"}`; }
@@ -988,6 +989,10 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
 
   async close(options) {
     if (this._outsideClickHandler) document.removeEventListener("click", this._outsideClickHandler);
+    if (this._notesEditor) {
+      try { this._notesEditor.destroy(); } catch (err) { /* already gone */ }
+      this._notesEditor = null;
+    }
     entityWindows.delete(entityWindowKey(this.entityType, this.entityId));
     return super.close(options);
   }
@@ -1104,6 +1109,36 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       const uwp = entity?.uwp || this.prefill?.uwp;
       if (name && !uwp) this._lookupTravellerMap();
     }
+    this._mountNotesEditor(entity?.notes || "");
+  }
+
+  // Mounts a REAL ProseMirror editor via Foundry's own documented JS
+  // construction API, targeting the live DOM node (not markup-only
+  // `<prose-mirror>` auto-upgrade, which was confirmed live, 2026-09, to
+  // produce a non-functional editor here — no icons, not even typeable).
+  // Required container shape per Foundry's own v10 TextEditor docs:
+  // <div class="editor"><div class="editor-content">...</div></div>,
+  // targeting the inner ".editor-content" node.
+  async _mountNotesEditor(initialNotes) {
+    if (this._notesEditor) {
+      try { this._notesEditor.destroy(); } catch (err) { /* already gone */ }
+      this._notesEditor = null;
+    }
+    const mount = this.root.querySelector("[data-dr-notes-mount] .editor-content");
+    if (!mount) return;
+    try {
+      this._notesEditor = await foundry.applications.ux.ProseMirrorEditor.create(mount, notesToEditableHtml(initialNotes), {});
+    } catch (err) {
+      console.warn("Drinax Tracker | Could not create notes editor.", err);
+    }
+  }
+
+  // Reads the editor's current content straight from its live DOM —
+  // ProseMirror's EditorView renders the document as real, always-current
+  // DOM (not a virtual model needing separate serialization), so this is
+  // the standard, reliable way to get its HTML back.
+  _notesHtml() {
+    return this._notesEditor?.view?.dom?.innerHTML || "";
   }
 
   _factionForm(f) {
@@ -1124,7 +1159,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       <div class="dr-field">
         <label>Notes</label>
         <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <prose-mirror name="notes" data-f-notes value="${esc(notesToEditableHtml(f.notes))}" editable="true"></prose-mirror>
+        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
       </div>
       <div class="dr-field dr-field-checkbox"><label><input type="checkbox" data-f-protected ${f.protected ? "checked" : ""}> Protect from deletion</label></div>
       <div class="dr-drawer-actions">
@@ -1156,7 +1191,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       <div class="dr-field">
         <label>Notes</label>
         <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <prose-mirror name="notes" data-c-notes value="${esc(notesToEditableHtml(c.notes))}" editable="true"></prose-mirror>
+        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
       </div>
       ${c.actorUuid ? `<div class="dr-card-meta">Linked actor: <a href="#" data-dr-open-actor="${esc(c.actorUuid)}">Open sheet</a></div>` : ""}
       <div class="dr-drawer-actions">
@@ -1200,7 +1235,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       <div class="dr-field">
         <label>Notes</label>
         <div class="dr-notes-toolbar"><button type="button" class="dr-icon-btn" data-dr-insert-link>+ Link to entity&hellip;</button></div>
-        <prose-mirror name="notes" data-w-notes value="${esc(notesToEditableHtml(w.notes))}" editable="true"></prose-mirror>
+        <div class="editor" data-dr-notes-mount><div class="editor-content"></div></div>
       </div>
       ${w.sourceUuid ? `<div class="dr-card-meta">Linked document: <a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source</a></div>` : ""}
       <div class="dr-drawer-actions">
@@ -1210,12 +1245,11 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       </div>`;
   }
 
-  // Appends "@Drinax[type:id]{Name}" as a new paragraph at the end of the
-  // notes editor's current content — inserting at the live cursor position
-  // instead would need reaching into the <prose-mirror> element's internal
-  // ProseMirror EditorView, which isn't worth the risk without confirming
-  // its exact behavior live first (see this module's own notes on other
-  // Foundry editor-API assumptions needing a live check).
+  // Inserts "@Drinax[type:id]{Name}" as plain text at the current cursor
+  // position in the notes editor, via ProseMirror's own transaction API
+  // (real, stable, documented ProseMirror-core behavior, not a Foundry-
+  // specific guess) — dispatching a transaction is the standard way to
+  // programmatically edit a live EditorView's content.
   async _insertEntityLink() {
     const data = this._data();
     const options = [
@@ -1236,10 +1270,11 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     if (!picked) return;
     const [type, entId] = picked.split(":");
     const entity = findEntity(type, entId);
-    const notesEl = this.root.querySelector("prose-mirror");
-    if (!notesEl || !entity) return;
-    const tag = `<p>@Drinax[${type}:${entId}]{${esc(entity.name)}}</p>`;
-    notesEl.value = (notesEl.value || "") + tag;
+    const view = this._notesEditor?.view;
+    if (!view || !entity) return;
+    const tag = `@Drinax[${type}:${entId}]{${entity.name}}`;
+    view.dispatch(view.state.tr.insertText(tag));
+    view.focus();
   }
 
   async _lookupTravellerMap() {
@@ -1351,7 +1386,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       contact: root.querySelector("[data-f-contact]").value.trim(),
       standing: standingRaw === "" ? "" : Number(standingRaw),
       standingBaseline: standingBaselineRaw === "" ? defaultStandingBaseline(category) : Number(standingBaselineRaw),
-      notes: root.querySelector("[data-f-notes]").value || "",
+      notes: this._notesHtml(),
       protected: root.querySelector("[data-f-protected]").checked,
     };
     const data = this._data();
@@ -1396,7 +1431,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       ac: root.querySelector("[data-c-ac]").value.trim(),
       soc: socRaw === "" ? "" : Number(socRaw),
       location: root.querySelector("[data-c-location]").value || "",
-      notes: root.querySelector("[data-c-notes]").value || "",
+      notes: this._notesHtml(),
     };
     const data = this._data();
     data.contacts = data.contacts || [];
@@ -1433,7 +1468,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       relationship: root.querySelector("[data-w-relationship]").value || "neutral",
       status: root.querySelector("[data-w-status]").value.trim(),
       tags: root.querySelector("[data-w-tags]").value.trim(),
-      notes: root.querySelector("[data-w-notes]").value || "",
+      notes: this._notesHtml(),
     };
     const data = this._data();
     data.worlds = data.worlds || [];

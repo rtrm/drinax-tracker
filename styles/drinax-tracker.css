@@ -316,18 +316,18 @@
 }
 #drinax-root .dr-field textarea { resize: vertical; min-height: 60px; }
 
-/* Rich-text Notes editor (Foundry's own <prose-mirror> custom element) */
+/* Rich-text Notes editor — a real ProseMirror editor constructed via
+   Foundry's own JS API (ProseMirrorEditor.create), targeting this exact
+   container shape per Foundry's own docs. Left mostly unstyled (sizing
+   only) so Foundry's own editor/toolbar CSS applies natively — that's
+   what makes the toolbar icons and menu look and work like every other
+   rich text editor in Foundry, standard-look theme or not. */
 #drinax-root .dr-notes-toolbar { margin-bottom: 6px; }
-#drinax-root prose-mirror {
-  display: block;
+#drinax-root [data-dr-notes-mount] { margin-bottom: 4px; }
+#drinax-root [data-dr-notes-mount] .editor-content {
   min-height: 140px;
   max-height: 320px;
   overflow-y: auto;
-  background: var(--panel-alt);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12.5px;
 }
 
 /* Custom @Drinax[...] entity-link content links, rendered by the enricher
