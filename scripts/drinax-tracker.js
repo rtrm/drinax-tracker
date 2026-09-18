@@ -376,6 +376,33 @@ function entityTypeLabel(type) {
   return type === "faction" ? "Faction" : type === "contact" ? "Contact" : "World";
 }
 
+// Markup for a clickable cross-reference to another tracker entity, used
+// both for links a user inserts into notes and for the automatic backlink
+// added to the other end (see addBacklink below). Clicks are handled by the
+// existing delegated "[data-dr-open-entity]" listeners already wired up on
+// both the main tracker window and entity windows.
+function entityLinkHtml(type, id, name) {
+  return `<a href="#" class="content-link drinax-link" data-dr-open-entity="${type}:${id}">` +
+    `<i class="fa-solid ${entityIcon(type)}"></i>${esc(name)}</a>`;
+}
+
+// Writes a link back to the source entity into the target entity's own
+// stored notes, directly via settings (the target's window, if any, may not
+// be open) — so inserting a link from A to B also makes B link back to A.
+// Skipped if a link to that source already sits in the target's notes, so
+// linking twice (or opening the picker again) doesn't pile up duplicates.
+async function addBacklink(targetType, targetId, sourceType, sourceId, sourceName) {
+  const data = game.settings.get(MODULE_ID, "data") || seedData();
+  const list = data[`${targetType}s`] || [];
+  const target = list.find(x => x.id === targetId);
+  if (!target) return;
+  const marker = `data-dr-open-entity="${sourceType}:${sourceId}"`;
+  if ((target.notes || "").includes(marker)) return;
+  target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, sourceId, sourceName)}</p>`;
+  await game.settings.set(MODULE_ID, "data", data);
+  refreshOpenWindows();
+}
+
 // GM confirms, then removes the entity from settings data and closes/drops
 // any window open on it. Shared by the card grid's own Delete button and the
 // matching button inside an entity's own window.
@@ -572,6 +599,32 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     (data.contacts || []).forEach(c => {
       if (c.location === undefined) { c.location = ""; migrated = true; }
     });
+    // One-time migration: notes written before entity links became real
+    // hyperlinks stored the plain "@Drinax[type:id]{Label}" placeholder
+    // text (never rendered as a link, never created a backlink the other
+    // way). Convert any leftovers into real links, and backfill the other
+    // end's backlink exactly as a fresh "+ Entity Link…" insert would.
+    const findEntityInData = (type, id) => (data[`${type}s`] || []).find(x => x.id === id);
+    for (const plural of ["factions", "contacts", "worlds"]) {
+      const sourceType = plural.slice(0, -1);
+      for (const entity of data[plural] || []) {
+        if (!entity.notes || !entity.notes.includes("@Drinax[")) continue;
+        entity.notes = entity.notes.replace(
+          /@Drinax\[(faction|contact|world):([^\]]+)\](?:\{([^}]+)\})?/g,
+          (m, targetType, targetId, label) => {
+            const target = findEntityInData(targetType, targetId);
+            if (target) {
+              const marker = `data-dr-open-entity="${sourceType}:${entity.id}"`;
+              if (!(target.notes || "").includes(marker)) {
+                target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, entity.id, entity.name)}</p>`;
+              }
+            }
+            return entityLinkHtml(targetType, targetId, label || target?.name || "Unknown");
+          }
+        );
+        migrated = true;
+      }
+    }
     const drifted = runStandingDrift(data);
     this.trackerState = {
       factions: data.factions || [],
@@ -1267,11 +1320,12 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     sel.addRange(r);
   }
 
-  // Inserts "@Drinax[type:id]{Name}" as plain text at the notes editor's
-  // cursor position — this plain text is exactly what the "drinax-link"
-  // enricher (registered in the init hook) later matches when rendering
-  // notes on a card, turning it into a clickable link.
+  // Inserts a real clickable link to another tracker entity at the notes
+  // editor's cursor position, and writes a matching link back into that
+  // entity's own notes (addBacklink) — so the two entities end up linked to
+  // each other, not just one-way.
   async _insertEntityLink() {
+    if (!this.entityId) { ui.notifications.warn("Save this entity before linking to others."); return; }
     const data = this._data();
     const options = [
       ...data.factions.map(x => ({ value: `faction:${x.id}`, label: `Faction — ${x.name}` })),
@@ -1295,7 +1349,9 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     const entity = findEntity(type, entId);
     if (!entity) return;
     this._restoreSelection(editable, savedRange);
-    document.execCommand("insertText", false, `@Drinax[${type}:${entId}]{${entity.name}}`);
+    document.execCommand("insertHTML", false, entityLinkHtml(type, entId, entity.name) + "&nbsp;");
+    const sourceName = this._entity()?.name || entity.name;
+    await addBacklink(type, entId, this.entityType, this.entityId, sourceName);
   }
 
   // Wraps the current selection in a hyperlink, or inserts the URL as new
@@ -1640,36 +1696,6 @@ Hooks.once("init", () => {
     icon: "fa-solid fa-rotate-left",
     type: DrinaxResetMenu,
     restricted: true
-  });
-
-  // Custom "@Drinax[type:id]{Label}" content-link syntax, so a Notes editor
-  // can link to another faction/contact/world (these aren't real Foundry
-  // documents, so they can't use the native "@UUID[...]" syntax) — a real,
-  // documented v13 mechanism (CONFIG.TextEditor.enrichers), confirmed
-  // against a live system's own usage of it while planning this feature.
-  // onRender fires once the enriched element is actually in the DOM, so the
-  // click handler always has something real to attach to.
-  CONFIG.TextEditor.enrichers.push({
-    id: "drinax-link",
-    pattern: /@Drinax\[(faction|contact|world):([^\]]+)\](?:\{([^}]+)\})?/g,
-    enricher: async (match) => {
-      const [, type, entId, label] = match;
-      const entity = findEntity(type, entId);
-      const a = document.createElement("a");
-      a.className = "content-link drinax-link";
-      a.dataset.drOpenEntity = `${type}:${entId}`;
-      a.innerHTML = `<i class="fa-solid ${entityIcon(type)}"></i>${esc(label || entity?.name || "Unknown")}`;
-      return a;
-    },
-    onRender: (element) => {
-      element.querySelectorAll(".drinax-link").forEach(a => {
-        a.addEventListener("click", (e) => {
-          e.preventDefault();
-          const [type, entId] = a.dataset.drOpenEntity.split(":");
-          openEntityWindow(type, entId);
-        });
-      });
-    }
   });
 });
 

@@ -3,9 +3,9 @@
    via one ApplicationV2 window's innerHTML applies globally to the whole
    page for as long as that window stays open, but an entity window must
    still look right even when the main tracker window isn't currently open
-   (e.g. reopened later, or opened directly via a @Drinax[...] link/macro),
-   so this needs to be a real module stylesheet (declared in module.json),
-   not markup-dependent. */
+   (e.g. reopened later, or opened directly via an entity cross-reference
+   link elsewhere in the app), so this needs to be a real module stylesheet
+   (declared in module.json), not markup-dependent. */
 #drinax-root {
   color-scheme: dark;
   --bg: #0b0f17;
@@ -354,9 +354,10 @@
 #drinax-root .dr-notes-editable p:last-child { margin-bottom: 0; }
 #drinax-root .dr-notes-editable img { max-width: 100%; }
 
-/* Custom @Drinax[...] entity-link content links, rendered by the enricher
-   registered in the init hook. Reuses Foundry's own ".content-link" class
-   for baseline appearance, this just accents it to match the theme. */
+/* Entity cross-reference links inserted into notes via "+ Entity Link…"
+   (see entityLinkHtml/addBacklink in drinax-tracker.js). Reuses Foundry's
+   own ".content-link" class for baseline appearance, this just accents it
+   to match the theme. */
 #drinax-root .drinax-link,
 .drinax-link {
   color: var(--gold, #c9a24a);
