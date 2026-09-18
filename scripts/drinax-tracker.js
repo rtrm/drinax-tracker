@@ -1183,6 +1183,27 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 }
 
+// Shared by the settings-menu entry below and the "/drinax-reset" chat
+// command (see the chatMessage hook near the bottom of this file) — both
+// are just different ways to trigger the same confirm-then-reset flow.
+async function resetTrackerData() {
+  const ok = await foundry.applications.api.DialogV2.confirm({
+    window: { title: "Reset Drinax Tracker Data" },
+    content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
+  });
+  if (!ok) return;
+  const data = seedData();
+  await game.settings.set(MODULE_ID, "data", data);
+  const app = game.modules.get(MODULE_ID)?.app;
+  if (app?.rendered) {
+    app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
+    const priInput = app.root.querySelector("[data-dr-pri]");
+    if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
+    app._renderContent();
+  }
+  ui.notifications.info("Drinax Tracker data has been reset.");
+}
+
 // Reset is deliberately tucked away in Foundry's Configure Settings screen
 // (Module Settings) rather than the tracker toolbar, so it isn't one click
 // away during normal play. Foundry requires a settings-menu "type" to be a
@@ -1196,21 +1217,7 @@ class DrinaxResetMenu extends foundry.applications.api.ApplicationV2 {
   static DEFAULT_OPTIONS = { id: "drinax-tracker-reset-menu", window: { title: "Reset Drinax Tracker Data" } };
 
   async render(options) {
-    const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Reset Drinax Tracker Data" },
-      content: "<p>Reset all Drinax Tracker data — factions, contacts, worlds, PRI, and the change log — back to the starting examples? This cannot be undone.</p>"
-    });
-    if (!ok) return this;
-    const data = seedData();
-    await game.settings.set(MODULE_ID, "data", data);
-    const app = game.modules.get(MODULE_ID)?.app;
-    if (app?.rendered) {
-      app.trackerState = { factions: data.factions, contacts: data.contacts, worlds: data.worlds, pri: data.pri, log: data.log };
-      const priInput = app.root.querySelector("[data-dr-pri]");
-      if (priInput) priInput.value = data.pri === "" ? "" : data.pri;
-      app._renderContent();
-    }
-    ui.notifications.info("Drinax Tracker data has been reset.");
+    await resetTrackerData();
     return this;
   }
 }
@@ -1304,6 +1311,22 @@ Hooks.on("updateSetting", (setting) => {
   const priInput = app.root?.querySelector("[data-dr-pri]");
   if (priInput) priInput.value = app.trackerState.pri === "" ? "" : app.trackerState.pri;
   app._renderContent();
+});
+
+// "/drinax-reset" chat command — Foundry has no built-in slash-command
+// framework, so this hooks the raw chat entry box directly. Returning
+// false from "chatMessage" stops Foundry from posting the text as a normal
+// chat message; any other input is left completely alone (returning true)
+// so this can never interfere with real chat, rolls, or other modules'
+// own commands.
+Hooks.on("chatMessage", (chatLog, message) => {
+  if (message.trim().toLowerCase() !== "/drinax-reset") return true;
+  if (!game.user.isGM) {
+    ui.notifications.warn("Only the GM can reset Drinax Tracker data.");
+    return false;
+  }
+  resetTrackerData();
+  return false;
 });
 
 // Best-effort button in the Journal Directory header. If Foundry's sidebar
