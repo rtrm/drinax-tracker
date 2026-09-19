@@ -24,6 +24,17 @@
   --pirate: #a33d3d;
   --other: #5c8a86;
 
+  /* Muted card-background tints for the faction/world card grid (see
+     FACTION_CATEGORIES' "bg" field in drinax-tracker.js) — deliberately
+     separate from the accent colors above, since these are translucent
+     overlays meant to read as a faint wash of color rather than the bolder
+     border/tag accents. aslan-clan reuses hierate's hue at lower alpha,
+     for "a paler version of that yellow" rather than a second color. */
+  --catbg-imperium: rgba(193, 68, 60, 0.16);
+  --catbg-hierate: rgba(201, 178, 74, 0.20);
+  --catbg-aslan-clan: rgba(201, 178, 74, 0.09);
+  --catbg-drinax: rgba(91, 127, 166, 0.16);
+
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -189,7 +200,7 @@
 }
 
 #drinax-root .dr-card {
-  background: var(--panel);
+  background: var(--cat-bg, var(--panel));
   border: 1px solid var(--border);
   border-left: 3px solid var(--cat-color, var(--border));
   border-radius: 5px;

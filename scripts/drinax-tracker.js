@@ -1,13 +1,44 @@
 const MODULE_ID = "drinax-tracker";
 
+// "bg" is a muted card-background tint for that category (left off entirely
+// for pirate/other/custom categories, which just keep the plain panel
+// background) — deliberately its own set of colors rather than reusing
+// "color" (the left-border/tag accent above), since the requested tints
+// (red for Imperium, yellow for Hierate, a paler yellow for Aslan Clan,
+// pale blue for Drinax) don't match the existing accent palette (e.g.
+// --imperium is blue, used for the border/tag, not the background).
 const FACTION_CATEGORIES = [
-  { id: "drinax", label: "Kingdom of Drinax", color: "var(--gold)" },
-  { id: "imperium", label: "Third Imperium", color: "var(--imperium)" },
-  { id: "hierate", label: "Aslan Hierate", color: "var(--aslan)" },
-  { id: "aslan_clan", label: "Aslan Clan", color: "var(--aslan)" },
+  { id: "drinax", label: "Kingdom of Drinax", color: "var(--gold)", bg: "var(--catbg-drinax)" },
+  { id: "imperium", label: "Third Imperium", color: "var(--imperium)", bg: "var(--catbg-imperium)" },
+  { id: "hierate", label: "Aslan Hierate", color: "var(--aslan)", bg: "var(--catbg-hierate)" },
+  { id: "aslan_clan", label: "Aslan Clan", color: "var(--aslan)", bg: "var(--catbg-aslan-clan)" },
   { id: "pirate", label: "Pirate Group", color: "var(--pirate)" },
   { id: "other", label: "Other Faction", color: "var(--other)" },
 ];
+
+// Sentinel picked from the Category dropdown to prompt for a brand new,
+// free-typed category name instead of picking a fixed one — see
+// _promptNewCategory. Anything typed by a user is exceedingly unlikely to
+// collide with this literal string.
+const NEW_CATEGORY_VALUE = "__new_category__";
+
+// Category dropdown options: the fixed categories, plus any custom
+// category names already in use on other factions (so switching between
+// factions offers previously-typed names instead of forcing a retype),
+// plus the "+ New Category…" prompt trigger. Custom categories are never
+// added to FACTION_CATEGORIES itself — they're not real entries, so they
+// don't get their own chip in the top summary (by design) and fall back to
+// catInfo's own default of the last entry ("Other Faction") for color/label
+// wherever a full category lookup is needed.
+function customCategoryOptions(data) {
+  const known = new Set(FACTION_CATEGORIES.map(c => c.id));
+  const custom = [...new Set((data.factions || []).map(f => f.category).filter(c => c && !known.has(c)))];
+  return [
+    ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })),
+    ...custom.map(c => ({ value: c, label: c })),
+    { value: NEW_CATEGORY_VALUE, label: "+ New Category…" }
+  ];
+}
 
 // Only these categories are singleton, nation-level polities that the
 // Pirates of Drinax "Standing" mechanic applies to — individual Aslan
@@ -49,6 +80,18 @@ const WORLD_RELATIONSHIPS = [
 ];
 
 function catInfo(id) { return FACTION_CATEGORIES.find(c => c.id === id) || FACTION_CATEGORIES[FACTION_CATEGORIES.length - 1]; }
+// Inline style fragment for a card's muted category-background tint —
+// empty for categories with no "bg" (pirate, other, and any custom
+// category, which all just keep the card's plain default background).
+function catBgStyle(cat) { return cat && cat.bg ? `--cat-bg:${cat.bg};` : ""; }
+// Like catInfo, but for display: a custom category (not one of
+// FACTION_CATEGORIES) shows its own typed name as the label instead of
+// silently being relabeled "Other Faction" by catInfo's fallback — it
+// still borrows Other's color/lack of background tint for styling.
+function catDisplay(id) {
+  const info = catInfo(id);
+  return FACTION_CATEGORIES.some(c => c.id === id) ? info : { ...info, label: id };
+}
 function dispInfo(id) { return DISPOSITIONS.find(d => d.id === id) || DISPOSITIONS[2]; }
 function roleInfo(id) { return CONTACT_ROLES.find(r => r.id === id) || CONTACT_ROLES[0]; }
 function relInfo(id) { return WORLD_RELATIONSHIPS.find(r => r.id === id) || WORLD_RELATIONSHIPS[3]; }
@@ -810,8 +853,11 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
   _renderSummary() {
     const el = this.root.querySelector("[data-dr-summary]");
+    const knownCategories = new Set(FACTION_CATEGORIES.map(c => c.id));
     const chips = FACTION_CATEGORIES.map(c => {
-      const n = this.trackerState.factions.filter(f => f.category === c.id).length;
+      // Custom categories don't get their own chip — folded into "Other
+      // Faction" here instead, alongside factions actually categorized "other".
+      const n = this.trackerState.factions.filter(f => c.id === "other" ? !knownCategories.has(f.category) || f.category === "other" : f.category === c.id).length;
       return `<span class="dr-summary-chip"><b>${n}</b> ${esc(c.label)}</span>`;
     });
     chips.push(`<span class="dr-summary-chip"><b>${this.trackerState.contacts.length}</b> Contacts</span>`);
@@ -850,12 +896,12 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 
   _factionCard(f) {
-    const cat = catInfo(f.category);
+    const cat = catDisplay(f.category);
     const disp = dispInfo(f.disposition);
     const hasStanding = STANDING_CATEGORIES.includes(f.category) && typeof f.standing === "number" && Number.isFinite(f.standing);
     const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
     return `
-      <div class="dr-card" style="--cat-color:${cat.color}" data-dr-card-type="faction" data-dr-card-id="${f.id}">
+      <div class="dr-card" style="--cat-color:${cat.color};${catBgStyle(cat)}" data-dr-card-type="faction" data-dr-card-id="${f.id}">
         <div class="dr-card-top"><p class="dr-card-name">${esc(f.name)}</p></div>
         <span class="dr-card-tag">${esc(cat.label)}</span>
         <span class="dr-badge"><span class="dr-dot" style="--dot-color:${disp.color}"></span>${esc(disp.label)}</span>
@@ -893,7 +939,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     const linkedContacts = this.trackerState.contacts.filter(c => c.location === w.id);
     return `
-      <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"}" data-dr-card-type="world" data-dr-card-id="${w.id}">
+      <div class="dr-card" style="--cat-color:${cat ? cat.color : "var(--border)"};${catBgStyle(cat)}" data-dr-card-type="world" data-dr-card-id="${w.id}">
         <div class="dr-card-top">
           <p class="dr-card-name">${esc(w.name)}</p>
           ${w.uwp ? `<span class="dr-card-uwp mono">${esc(w.uwp)}</span>` : ""}
@@ -1098,10 +1144,16 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
         const wrapper = selectOpt.closest(".dr-select");
         const hidden = wrapper.querySelector("input[type=hidden]");
         const btn = wrapper.querySelector("[data-dr-select-toggle]");
+        wrapper.querySelector(".dr-select-menu").classList.remove("open");
+
+        if (hidden.hasAttribute("data-f-category") && selectOpt.dataset.drSelectValue === NEW_CATEGORY_VALUE) {
+          this._promptNewCategory(wrapper, hidden, btn);
+          return;
+        }
+
         hidden.value = selectOpt.dataset.drSelectValue;
         btn.textContent = selectOpt.textContent;
         wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.toggle("selected", o === selectOpt));
-        wrapper.querySelector(".dr-select-menu").classList.remove("open");
 
         if (hidden.hasAttribute("data-f-category")) {
           const standingWrapper = root.querySelector("[data-f-standing-wrapper]");
@@ -1187,7 +1239,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     const content = this.root.querySelector("[data-dr-entity-content]");
     const entity = this._entity();
     const data = this._data();
-    if (this.entityType === "faction") content.innerHTML = this._factionForm(entity);
+    if (this.entityType === "faction") content.innerHTML = this._factionForm(entity, data);
     else if (this.entityType === "contact") content.innerHTML = this._contactForm(entity, data);
     else content.innerHTML = this._worldForm(entity, data);
     // Editing an existing world saved before a UWP was known, or adding one
@@ -1207,14 +1259,38 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
     return this.root.querySelector("[data-dr-notes-editable]")?.innerHTML || "";
   }
 
-  _factionForm(f) {
+  // Prompts for a free-typed category name (picked via the Category
+  // dropdown's "+ New Category…" entry) and applies it to that dropdown,
+  // same as picking a fixed option would. Cancelling leaves the dropdown
+  // showing whatever was selected before.
+  async _promptNewCategory(wrapper, hidden, btn) {
+    const name = await foundry.applications.api.DialogV2.prompt({
+      window: { title: "New Category" },
+      content: `<div class="dr-field"><label>Category name</label><input type="text" id="dr-new-category" placeholder="e.g. Local Corporation"></div>`,
+      ok: {
+        label: "Add",
+        callback: (event, button) => button.form.querySelector("#dr-new-category").value.trim()
+      },
+      rejectClose: false
+    }).catch(() => null);
+    if (!name) return;
+    hidden.value = name;
+    btn.textContent = name;
+    wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.remove("selected"));
+    // A custom category is never one of STANDING_CATEGORIES, so hide the
+    // Standing fields if they'd been showing for whatever was picked before.
+    const standingWrapper = this.root.querySelector("[data-f-standing-wrapper]");
+    if (standingWrapper) standingWrapper.style.display = "none";
+  }
+
+  _factionForm(f, data) {
     const isEdit = !!f;
     f = f || { category: "drinax", disposition: "neutral", name: "", contact: "", notes: "", standing: "", protected: false };
     const showStanding = STANDING_CATEGORIES.includes(f.category);
     return `
       <h3>${isEdit ? "Edit faction" : "Add faction"}</h3>
       <div class="dr-field"><label>Name</label><input type="text" data-f-name value="${esc(f.name)}" placeholder="e.g. Clan Ki'shafeni"></div>
-      <div class="dr-field"><label>Category</label>${customSelectHtml("data-f-category", FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })), f.category)}</div>
+      <div class="dr-field"><label>Category</label>${customSelectHtml("data-f-category", customCategoryOptions(data), f.category)}</div>
       <div class="dr-field"><label>Disposition toward the party</label>${customSelectHtml("data-f-disposition", DISPOSITIONS.map(d => ({ value: d.id, label: d.label })), f.disposition)}</div>
       <div class="dr-field"><label>Leader / contact</label><input type="text" data-f-contact value="${esc(f.contact)}" placeholder="Named NPC, if any"></div>
       <div data-f-standing-wrapper style="${showStanding ? "" : "display:none;"}">
