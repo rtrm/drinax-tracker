@@ -602,9 +602,15 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     // One-time migration: notes written before entity links became real
     // hyperlinks stored the plain "@Drinax[type:id]{Label}" placeholder
     // text (never rendered as a link, never created a backlink the other
-    // way). Convert any leftovers into real links, and backfill the other
-    // end's backlink exactly as a fresh "+ Entity Link…" insert would.
+    // way). Convert any leftovers into real links first (pass 1), then
+    // backfill each converted link's backlink (pass 2) — kept as two
+    // passes, rather than backlinking while converting, so a pair that had
+    // already been manually linked both ways with the old dead syntax is
+    // checked against every side's *converted* link before deciding a
+    // backlink is missing, instead of against whichever side hadn't been
+    // converted yet and so still looked link-less.
     const findEntityInData = (type, id) => (data[`${type}s`] || []).find(x => x.id === id);
+    const convertedLinks = [];
     for (const plural of ["factions", "contacts", "worlds"]) {
       const sourceType = plural.slice(0, -1);
       for (const entity of data[plural] || []) {
@@ -613,17 +619,20 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
           /@Drinax\[(faction|contact|world):([^\]]+)\](?:\{([^}]+)\})?/g,
           (m, targetType, targetId, label) => {
             const target = findEntityInData(targetType, targetId);
-            if (target) {
-              const marker = `data-dr-open-entity="${sourceType}:${entity.id}"`;
-              if (!(target.notes || "").includes(marker)) {
-                target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, entity.id, entity.name)}</p>`;
-              }
-            }
+            convertedLinks.push({ sourceType, sourceId: entity.id, targetType, targetId });
             return entityLinkHtml(targetType, targetId, label || target?.name || "Unknown");
           }
         );
         migrated = true;
       }
+    }
+    for (const { sourceType, sourceId, targetType, targetId } of convertedLinks) {
+      const source = findEntityInData(sourceType, sourceId);
+      const target = findEntityInData(targetType, targetId);
+      if (!source || !target) continue;
+      const marker = `data-dr-open-entity="${sourceType}:${sourceId}"`;
+      if ((target.notes || "").includes(marker)) continue;
+      target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, sourceId, source.name)}</p>`;
     }
     const drifted = runStandingDrift(data);
     this.trackerState = {
