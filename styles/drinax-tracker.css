@@ -110,9 +110,12 @@
   font-size: 11px;
   padding: 5px 9px;
   border-radius: 3px;
-  background: var(--panel-alt);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
+  /* Same per-category tint as the card grid (--cat-color/--cat-bg set
+     inline per chip in _renderSummary) — falls back to the plain chip
+     look for Contacts/Worlds tracked, which don't set either variable. */
+  background: var(--cat-bg, var(--panel-alt));
+  border: 1px solid var(--cat-color, var(--border));
+  color: var(--cat-color, var(--text-muted));
   white-space: nowrap;
 }
 #drinax-root .dr-summary-chip b { color: var(--text); font-weight: 700; }
@@ -211,6 +214,11 @@
   cursor: pointer;
 }
 #drinax-root .dr-card:hover { border-color: var(--gold); }
+/* Categories tab rows aren't a single clickable card (only the buttons
+   inside are), so skip the pointer cursor and gold hover border that
+   would otherwise suggest the whole row is clickable. */
+#drinax-root .dr-card-static { cursor: default; }
+#drinax-root .dr-card-static:hover { border-color: var(--border); }
 #drinax-root .dr-card-top {
   display: flex;
   justify-content: space-between;

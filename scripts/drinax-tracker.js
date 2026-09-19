@@ -22,17 +22,23 @@ const FACTION_CATEGORIES = [
 // collide with this literal string.
 const NEW_CATEGORY_VALUE = "__new_category__";
 
-// Category dropdown options: the fixed categories, plus any custom
-// category names already in use on other factions (so switching between
-// factions offers previously-typed names instead of forcing a retype),
-// plus the "+ New Category…" prompt trigger. Custom categories are never
-// added to FACTION_CATEGORIES itself — they're not real entries, so they
-// don't get their own chip in the top summary (by design) and fall back to
-// catInfo's own default of the last entry ("Other Faction") for color/label
-// wherever a full category lookup is needed.
+// Category dropdown options: the fixed categories, plus every registered
+// custom category (data.customCategories — see the Categories tab and
+// promptNewCategory), plus the "+ New Category…" prompt trigger. Custom
+// categories are never added to FACTION_CATEGORIES itself — they're not
+// built-in entries, so they don't get their own chip in the top summary
+// (by design; see _renderSummary) and fall back to resolveCategory's own
+// default (Other Faction's color, no background tint) unless a color has
+// been set for them in categoryColors.
 function customCategoryOptions(data) {
   const known = new Set(FACTION_CATEGORIES.map(c => c.id));
-  const custom = [...new Set((data.factions || []).map(f => f.category).filter(c => c && !known.has(c)))];
+  // Registered custom categories (data.customCategories) plus, for
+  // robustness, any stray category string already on a faction that
+  // somehow isn't registered (shouldn't happen after the _loadData
+  // migration, but costs nothing to also cover here).
+  const registered = (data.customCategories || []).filter(c => c && !known.has(c));
+  const strays = (data.factions || []).map(f => f.category).filter(c => c && !known.has(c) && !registered.includes(c));
+  const custom = [...new Set([...registered, ...strays])];
   return [
     ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })),
     ...custom.map(c => ({ value: c, label: c })),
@@ -79,19 +85,38 @@ const WORLD_RELATIONSHIPS = [
   { id: "hostile", label: "Hostile", color: "var(--red)", fence: "—", recruitment: "—", riskArrest: "2+", riskSpies: "2+", protection: "—" },
 ];
 
-function catInfo(id) { return FACTION_CATEGORIES.find(c => c.id === id) || FACTION_CATEGORIES[FACTION_CATEGORIES.length - 1]; }
-// Inline style fragment for a card's muted category-background tint —
-// empty for categories with no "bg" (pirate, other, and any custom
-// category, which all just keep the card's plain default background).
-function catBgStyle(cat) { return cat && cat.bg ? `--cat-bg:${cat.bg};` : ""; }
-// Like catInfo, but for display: a custom category (not one of
-// FACTION_CATEGORIES) shows its own typed name as the label instead of
-// silently being relabeled "Other Faction" by catInfo's fallback — it
-// still borrows Other's color/lack of background tint for styling.
-function catDisplay(id) {
-  const info = catInfo(id);
-  return FACTION_CATEGORIES.some(c => c.id === id) ? info : { ...info, label: id };
+// Resolves a category id (built-in or custom) to its display label, accent
+// color, and muted background tint, folding in any user-chosen color
+// override (categoryColors, set via the Categories tab or "+ New
+// Category…") on top of the built-in defaults:
+// - A color override applies to ANY category, built-in or custom, and its
+//   muted background tint is always derived from that same chosen color
+//   via color-mix — "the same muted look" for whatever color is picked,
+//   without having to hand-tune a second background value per category.
+// - Without an override, a built-in category keeps its own hardcoded
+//   accent/background (see FACTION_CATEGORIES) — these don't come from
+//   color-mix because the requested tints (e.g. Drinax's pale blue) are
+//   deliberately a different hue than the accent color (Drinax's accent is
+//   the shared theme gold, not blue).
+// - A custom category with no override yet (freshly typed, or from data
+//   saved before categories had colors) falls back to Other Faction's
+//   grey accent and no background tint.
+function resolveCategory(id, categoryColors) {
+  const builtIn = FACTION_CATEGORIES.find(c => c.id === id);
+  const other = FACTION_CATEGORIES[FACTION_CATEGORIES.length - 1];
+  const label = builtIn ? builtIn.label : (id || other.label);
+  const override = categoryColors && categoryColors[id];
+  if (override) {
+    return { id, label, color: override, bg: `color-mix(in srgb, ${override} 16%, var(--panel))` };
+  }
+  if (builtIn) return { id, label, color: builtIn.color, bg: builtIn.bg || null };
+  return { id, label, color: other.color, bg: null };
 }
+// Inline style fragment for a card's muted category-background tint —
+// empty for categories with no "bg" (pirate, other, and any custom or
+// built-in category with no color override, which all just keep the
+// card's plain default background).
+function catBgStyle(cat) { return cat && cat.bg ? `--cat-bg:${cat.bg};` : ""; }
 function dispInfo(id) { return DISPOSITIONS.find(d => d.id === id) || DISPOSITIONS[2]; }
 function roleInfo(id) { return CONTACT_ROLES.find(r => r.id === id) || CONTACT_ROLES[0]; }
 function relInfo(id) { return WORLD_RELATIONSHIPS.find(r => r.id === id) || WORLD_RELATIONSHIPS[3]; }
@@ -351,7 +376,16 @@ function seedData() {
       { id: uid(), name: "Theev", uwp: "", location: "", faction: null, status: "", tags: "", notes: "", sourceUuid: null, relationship: "friendly" },
     ],
     pri: "",
-    log: []
+    log: [],
+    // Custom faction categories, registered independently of any faction
+    // actually using one (so a category can exist — and be colored — via
+    // the Categories tab before anything is assigned to it). Built-in
+    // categories (FACTION_CATEGORIES) are never stored here.
+    customCategories: [],
+    // Color overrides keyed by category id, for BOTH built-in categories
+    // (recoloring one of the six) and custom ones (their only color,
+    // since they have no hardcoded default) — see resolveCategory.
+    categoryColors: {}
   };
 }
 
@@ -392,7 +426,9 @@ function refreshOpenWindows() {
         contacts: data.contacts || [],
         worlds: data.worlds || [],
         pri: data.pri ?? "",
-        log: data.log || []
+        log: data.log || [],
+        customCategories: data.customCategories || [],
+        categoryColors: data.categoryColors || {}
       };
       const priInput = mainApp.root?.querySelector("[data-dr-pri]");
       if (priInput) priInput.value = mainApp.trackerState.pri === "" ? "" : mainApp.trackerState.pri;
@@ -453,6 +489,45 @@ async function addBacklink(targetType, targetId, sourceType, sourceId, sourceNam
   target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, sourceId, sourceName)}</p>`;
   await game.settings.set(MODULE_ID, "data", data);
   refreshOpenWindows();
+}
+
+// Prompts for a brand-new custom category's name and color, and registers
+// it right away (data.customCategories + data.categoryColors) rather than
+// waiting for whatever faction edit triggered the prompt to be saved — so
+// it's immediately available in the Categories tab, the category filter,
+// and other open windows' Category dropdowns, even if that faction edit is
+// then cancelled. Shared by the Categories tab's own "+ Add Category" and
+// the faction Category dropdown's "+ New Category…", so both land in the
+// same place. Returns the new category's name, or null if cancelled/invalid.
+async function promptNewCategory(defaultColor = "#5c8a86") {
+  const result = await foundry.applications.api.DialogV2.prompt({
+    window: { title: "New Category" },
+    content: `
+      <div class="dr-field"><label>Category name</label><input type="text" id="dr-category-name" placeholder="e.g. Local Corporation"></div>
+      <div class="dr-field"><label>Colour</label><input type="color" id="dr-category-color" value="${esc(defaultColor)}"></div>`,
+    ok: {
+      label: "Add",
+      callback: (event, button) => ({
+        name: button.form.querySelector("#dr-category-name").value.trim(),
+        color: button.form.querySelector("#dr-category-color").value
+      })
+    },
+    rejectClose: false
+  }).catch(() => null);
+  if (!result || !result.name) return null;
+  const known = new Set(FACTION_CATEGORIES.map(c => c.id));
+  if (known.has(result.name) || result.name === NEW_CATEGORY_VALUE) {
+    ui.notifications.warn("That name is already used by a built-in category.");
+    return null;
+  }
+  const data = game.settings.get(MODULE_ID, "data") || seedData();
+  data.customCategories = data.customCategories || [];
+  if (!data.customCategories.includes(result.name)) data.customCategories.push(result.name);
+  data.categoryColors = data.categoryColors || {};
+  data.categoryColors[result.name] = result.color;
+  await game.settings.set(MODULE_ID, "data", data);
+  refreshOpenWindows();
+  return result.name;
 }
 
 // GM confirms, then removes the entity from settings data and closes/drops
@@ -610,7 +685,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
   constructor(options = {}) {
     super(options);
-    this.trackerState = { factions: [], contacts: [], worlds: [], pri: "", log: [] };
+    this.trackerState = { factions: [], contacts: [], worlds: [], pri: "", log: [], customCategories: [], categoryColors: {} };
     this.currentTab = "factions";
     this.activeFilter = "all";
     this.activeLocationFilter = "all";
@@ -686,13 +761,28 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       if ((target.notes || "").includes(marker)) continue;
       target.notes = `${target.notes || ""}<p>${entityLinkHtml(sourceType, sourceId, source.name)}</p>`;
     }
+    // One-time migration: register any faction category typed before custom
+    // categories were tracked as their own list (data.customCategories),
+    // so they show up in the new Categories tab and the category filter
+    // dropdown instead of only living on whichever factions already use them.
+    if (!Array.isArray(data.customCategories)) { data.customCategories = []; migrated = true; }
+    if (!data.categoryColors || typeof data.categoryColors !== "object") { data.categoryColors = {}; migrated = true; }
+    const knownCategoryIds = new Set(FACTION_CATEGORIES.map(c => c.id));
+    (data.factions || []).forEach(f => {
+      if (f.category && !knownCategoryIds.has(f.category) && !data.customCategories.includes(f.category)) {
+        data.customCategories.push(f.category);
+        migrated = true;
+      }
+    });
     const drifted = runStandingDrift(data);
     this.trackerState = {
       factions: data.factions || [],
       contacts: data.contacts || [],
       worlds: data.worlds || [],
       pri: data.pri ?? "",
-      log: data.log || []
+      log: data.log || [],
+      customCategories: data.customCategories,
+      categoryColors: data.categoryColors
     };
     if (migrated || drifted) await this._saveData();
   }
@@ -713,13 +803,16 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         this.activeLocationFilter = "all";
         root.querySelectorAll("[data-dr-tab]").forEach(b => b.classList.toggle("active", b === btn));
         root.querySelector("[data-dr-search]").value = "";
-        root.querySelector("[data-dr-add]").style.display = this.currentTab === "log" ? "none" : "";
+        const addBtn = root.querySelector("[data-dr-add]");
+        addBtn.style.display = this.currentTab === "log" ? "none" : "";
+        addBtn.textContent = this.currentTab === "categories" ? "+ Add Category" : "+ Add";
         this._renderContent();
       });
     });
 
     root.querySelector("[data-dr-search]").addEventListener("input", () => this._renderContent());
     root.querySelector("[data-dr-add]").addEventListener("click", () => {
+      if (this.currentTab === "categories") { promptNewCategory(); return; }
       const type = this.currentTab === "factions" ? "faction" : this.currentTab === "contacts" ? "contact" : "world";
       openEntityWindow(type, null);
     });
@@ -798,6 +891,15 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       const delWorld = e.target.closest("[data-dr-del-world]");
       if (delWorld) { e.stopPropagation(); deleteEntity("world", delWorld.dataset.drDelWorld); return; }
 
+      const catColor = e.target.closest("[data-dr-category-color]");
+      if (catColor) { e.stopPropagation(); this._promptCategoryColor(catColor.dataset.drCategoryColor); return; }
+
+      const catRename = e.target.closest("[data-dr-category-rename]");
+      if (catRename) { e.stopPropagation(); this._promptRenameCategory(catRename.dataset.drCategoryRename); return; }
+
+      const catDelete = e.target.closest("[data-dr-category-delete]");
+      if (catDelete) { e.stopPropagation(); this._deleteCategory(catDelete.dataset.drCategoryDelete); return; }
+
       const card = e.target.closest(".dr-card[data-dr-card-type]");
       if (card) { openEntityWindow(card.dataset.drCardType, card.dataset.drCardId); return; }
 
@@ -858,7 +960,8 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
       // Custom categories don't get their own chip — folded into "Other
       // Faction" here instead, alongside factions actually categorized "other".
       const n = this.trackerState.factions.filter(f => c.id === "other" ? !knownCategories.has(f.category) || f.category === "other" : f.category === c.id).length;
-      return `<span class="dr-summary-chip"><b>${n}</b> ${esc(c.label)}</span>`;
+      const cat = resolveCategory(c.id, this.trackerState.categoryColors);
+      return `<span class="dr-summary-chip" style="--cat-color:${cat.color};${catBgStyle(cat)}"><b>${n}</b> ${esc(c.label)}</span>`;
     });
     chips.push(`<span class="dr-summary-chip"><b>${this.trackerState.contacts.length}</b> Contacts</span>`);
     chips.push(`<span class="dr-summary-chip"><b>${this.trackerState.worlds.length}</b> Worlds tracked</span>`);
@@ -878,7 +981,11 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   _renderFilters() {
     const el = this.root.querySelector("[data-dr-filters]");
     if (this.currentTab === "factions") {
-      const items = [{ value: "all", label: "All Categories" }, ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label }))];
+      const items = [
+        { value: "all", label: "All Categories" },
+        ...FACTION_CATEGORIES.map(c => ({ value: c.id, label: c.label })),
+        ...(this.trackerState.customCategories || []).map(id => ({ value: id, label: id }))
+      ];
       el.innerHTML = this._filterSelectHtml(items, this.activeFilter, "primary");
     } else if (this.currentTab === "contacts") {
       const roleItems = [{ value: "all", label: "All Roles" }, ...CONTACT_ROLES.map(r => ({ value: r.id, label: r.label }))];
@@ -896,7 +1003,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
   }
 
   _factionCard(f) {
-    const cat = catDisplay(f.category);
+    const cat = resolveCategory(f.category, this.trackerState.categoryColors);
     const disp = dispInfo(f.disposition);
     const hasStanding = STANDING_CATEGORIES.includes(f.category) && typeof f.standing === "number" && Number.isFinite(f.standing);
     const standingLabel = hasStanding ? (f.standing > 0 ? `+${f.standing}` : `${f.standing}`) : "";
@@ -934,7 +1041,7 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
 
   _worldCard(w) {
     const f = w.faction ? this.trackerState.factions.find(x => x.id === w.faction) : null;
-    const cat = f ? catInfo(f.category) : null;
+    const cat = f ? resolveCategory(f.category, this.trackerState.categoryColors) : null;
     const rel = relInfo(w.relationship);
     const tags = (w.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     const linkedContacts = this.trackerState.contacts.filter(c => c.location === w.id);
@@ -954,6 +1061,29 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         ${w.sourceUuid ? `<div class="dr-card-meta"><a href="#" data-dr-open-source="${esc(w.sourceUuid)}">Open source document</a></div>` : ""}
         <div class="dr-card-actions">
           <button type="button" class="dr-icon-btn danger" data-dr-del-world="${w.id}">Delete</button>
+        </div>
+      </div>`;
+  }
+
+  // A row on the Categories tab: label, faction count, a color swatch that
+  // opens a color picker, and (for custom categories only) rename/delete —
+  // built-in categories can be recolored but not renamed or removed, since
+  // several (imperium/hierate/drinax) are matched by exact id elsewhere
+  // (the Standing mechanic, world-Relationship defaults).
+  _categoryCard(id) {
+    const cat = resolveCategory(id, this.trackerState.categoryColors);
+    const isBuiltIn = FACTION_CATEGORIES.some(c => c.id === id);
+    const count = this.trackerState.factions.filter(f => f.category === id).length;
+    return `
+      <div class="dr-card dr-card-static" style="--cat-color:${cat.color};${catBgStyle(cat)}">
+        <div class="dr-card-top"><p class="dr-card-name">${esc(cat.label)}</p></div>
+        <span class="dr-card-tag">${isBuiltIn ? "Built-in category" : "Custom category"}</span>
+        <div class="dr-card-meta">${count} faction${count === 1 ? "" : "s"}</div>
+        <div class="dr-card-actions">
+          <button type="button" class="dr-icon-btn" data-dr-category-color="${esc(id)}">Change Colour</button>
+          ${isBuiltIn ? "" : `
+            <button type="button" class="dr-icon-btn" data-dr-category-rename="${esc(id)}">Rename</button>
+            <button type="button" class="dr-icon-btn danger" data-dr-category-delete="${esc(id)}">Delete</button>`}
         </div>
       </div>`;
   }
@@ -1025,6 +1155,17 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
         empty.style.display = "none";
         grid.innerHTML = list.map(w => this._worldCard(w)).join("");
       }
+    } else if (this.currentTab === "categories") {
+      let ids = [...FACTION_CATEGORIES.map(c => c.id), ...(this.trackerState.customCategories || [])];
+      if (q) ids = ids.filter(id => resolveCategory(id, this.trackerState.categoryColors).label.toLowerCase().includes(q));
+      if (ids.length === 0) {
+        grid.innerHTML = "";
+        empty.style.display = "block";
+        empty.textContent = "No categories match your search.";
+      } else {
+        empty.style.display = "none";
+        grid.innerHTML = ids.map(id => this._categoryCard(id)).join("");
+      }
     } else {
       let list = (this.trackerState.log || []).slice();
       if (q) list = list.filter(entry => (entry.entityName + " " + (entry.reason || "") + " " + entry.changes.map(c => c.field).join(" ")).toLowerCase().includes(q));
@@ -1057,6 +1198,71 @@ class DrinaxTrackerApp extends foundry.applications.api.ApplicationV2 {
     });
     await this._saveData();
     if (this.currentTab === "log") this._renderContent();
+  }
+
+  // Categories tab: color/rename/delete act on this.trackerState directly
+  // (the in-memory mirror _renderContent reads from) rather than through
+  // DrinaxEntityWindow's this._data()/game.settings.get pattern, matching
+  // how PRI edits above already work on this class — then _saveData() plus
+  // refreshOpenWindows() persists it and brings every other open window
+  // (including any entity window's Category dropdown) up to date.
+  async _promptCategoryColor(id) {
+    const cat = resolveCategory(id, this.trackerState.categoryColors);
+    const current = /^#[0-9a-f]{6}$/i.test(cat.color) ? cat.color : "#5c8a86";
+    const hex = await foundry.applications.api.DialogV2.prompt({
+      window: { title: `Colour — ${cat.label}` },
+      content: `<div class="dr-field"><label>Colour</label><input type="color" id="dr-category-color" value="${esc(current)}"></div>`,
+      ok: {
+        label: "Save",
+        callback: (event, button) => button.form.querySelector("#dr-category-color").value
+      },
+      rejectClose: false
+    }).catch(() => null);
+    if (!hex) return;
+    this.trackerState.categoryColors = this.trackerState.categoryColors || {};
+    this.trackerState.categoryColors[id] = hex;
+    await this._saveData();
+    refreshOpenWindows();
+  }
+
+  async _promptRenameCategory(id) {
+    const newName = await foundry.applications.api.DialogV2.prompt({
+      window: { title: "Rename Category" },
+      content: `<div class="dr-field"><label>Category name</label><input type="text" id="dr-category-name" value="${esc(id)}"></div>`,
+      ok: {
+        label: "Rename",
+        callback: (event, button) => button.form.querySelector("#dr-category-name").value.trim()
+      },
+      rejectClose: false
+    }).catch(() => null);
+    if (!newName || newName === id) return;
+    const known = new Set(FACTION_CATEGORIES.map(c => c.id));
+    if (known.has(newName) || newName === NEW_CATEGORY_VALUE) {
+      ui.notifications.warn("That name is already used by a built-in category.");
+      return;
+    }
+    this.trackerState.customCategories = (this.trackerState.customCategories || []).map(c => c === id ? newName : c);
+    this.trackerState.factions.forEach(f => { if (f.category === id) f.category = newName; });
+    if (this.trackerState.categoryColors?.[id]) {
+      this.trackerState.categoryColors[newName] = this.trackerState.categoryColors[id];
+      delete this.trackerState.categoryColors[id];
+    }
+    await this._saveData();
+    refreshOpenWindows();
+  }
+
+  async _deleteCategory(id) {
+    const inUse = this.trackerState.factions.filter(f => f.category === id).length;
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Delete Category" },
+      content: `<p>Delete category "${esc(id)}"?${inUse ? ` ${inUse} faction${inUse === 1 ? "" : "s"} using it will be moved to "Other Faction".` : ""}</p>`
+    });
+    if (!ok) return;
+    this.trackerState.customCategories = (this.trackerState.customCategories || []).filter(c => c !== id);
+    this.trackerState.factions.forEach(f => { if (f.category === id) f.category = "other"; });
+    if (this.trackerState.categoryColors) delete this.trackerState.categoryColors[id];
+    await this._saveData();
+    refreshOpenWindows();
   }
 }
 
@@ -1147,7 +1353,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
         wrapper.querySelector(".dr-select-menu").classList.remove("open");
 
         if (hidden.hasAttribute("data-f-category") && selectOpt.dataset.drSelectValue === NEW_CATEGORY_VALUE) {
-          this._promptNewCategory(wrapper, hidden, btn);
+          this._promptNewCategory();
           return;
         }
 
@@ -1263,20 +1469,23 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
   // dropdown's "+ New Category…" entry) and applies it to that dropdown,
   // same as picking a fixed option would. Cancelling leaves the dropdown
   // showing whatever was selected before.
-  async _promptNewCategory(wrapper, hidden, btn) {
-    const name = await foundry.applications.api.DialogV2.prompt({
-      window: { title: "New Category" },
-      content: `<div class="dr-field"><label>Category name</label><input type="text" id="dr-new-category" placeholder="e.g. Local Corporation"></div>`,
-      ok: {
-        label: "Add",
-        callback: (event, button) => button.form.querySelector("#dr-new-category").value.trim()
-      },
-      rejectClose: false
-    }).catch(() => null);
+  //
+  // promptNewCategory() persists the new category and calls
+  // refreshOpenWindows(), which re-renders this window's own form from
+  // scratch (rebuilding the Category dropdown to include it) before this
+  // async function resumes — so the wrapper/hidden/button elements from
+  // when the dropdown was first opened are already detached from the DOM
+  // by the time we get here. Re-querying this.root for fresh ones is what
+  // actually lands the pick on the dropdown the user is looking at.
+  async _promptNewCategory() {
+    const name = await promptNewCategory();
     if (!name) return;
-    hidden.value = name;
-    btn.textContent = name;
-    wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.remove("selected"));
+    const hidden = this.root.querySelector("[data-f-category]");
+    const wrapper = hidden?.closest(".dr-select");
+    const btn = wrapper?.querySelector("[data-dr-select-toggle]");
+    if (hidden) hidden.value = name;
+    if (btn) btn.textContent = name;
+    if (wrapper) wrapper.querySelectorAll("[data-dr-select-value]").forEach(o => o.classList.remove("selected"));
     // A custom category is never one of STANDING_CATEGORIES, so hide the
     // Standing fields if they'd been showing for whatever was picked before.
     const standingWrapper = this.root.querySelector("[data-f-standing-wrapper]");
