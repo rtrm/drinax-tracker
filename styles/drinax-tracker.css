@@ -361,6 +361,7 @@
 #drinax-root .drinax-link,
 .drinax-link {
   color: var(--gold, #c9a24a);
+  cursor: pointer;
 }
 #drinax-root .drinax-link i,
 .drinax-link i {

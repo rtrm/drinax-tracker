@@ -381,8 +381,17 @@ function entityTypeLabel(type) {
 // added to the other end (see addBacklink below). Clicks are handled by the
 // existing delegated "[data-dr-open-entity]" listeners already wired up on
 // both the main tracker window and entity windows.
+// No "href" — this isn't a real navigable URL, and giving it one caused a
+// full game reload on click (confirmed live): clicked inside the notes
+// editor's contenteditable box, the browser followed it as a real
+// same-document "#" navigation, which Foundry's Electron shell treated as
+// leaving the game and reloaded. contenteditable="false" marks the link as
+// a non-editable "island" inside the editable notes box, which is the
+// standard way rich-text editors keep embedded interactive elements (here,
+// a plain click) from being swallowed by the surrounding editable region's
+// own caret/selection handling.
 function entityLinkHtml(type, id, name) {
-  return `<a href="#" class="content-link drinax-link" data-dr-open-entity="${type}:${id}">` +
+  return `<a class="content-link drinax-link" contenteditable="false" data-dr-open-entity="${type}:${id}">` +
     `<i class="fa-solid ${entityIcon(type)}"></i>${esc(name)}</a>`;
 }
 
@@ -1126,7 +1135,7 @@ class DrinaxEntityWindow extends foundry.applications.api.ApplicationV2 {
       if (insertImage) { this._insertImage(); return; }
 
       const openEntity = e.target.closest("[data-dr-open-entity]");
-      if (openEntity) { e.preventDefault(); const [type, id] = openEntity.dataset.drOpenEntity.split(":"); openEntityWindow(type, id); return; }
+      if (openEntity) { e.preventDefault(); e.stopPropagation(); const [type, id] = openEntity.dataset.drOpenEntity.split(":"); openEntityWindow(type, id); return; }
 
       const openActor = e.target.closest("[data-dr-open-actor]");
       if (openActor) { e.preventDefault(); fromUuid(openActor.dataset.drOpenActor).then(doc => doc?.sheet?.render(true)); return; }
