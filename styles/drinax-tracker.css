@@ -32,6 +32,14 @@
   box-sizing: border-box;
   overflow-y: auto;
 }
+/* This "height: 100%" only resolves to a real number, and so only actually
+   scrolls, if #drinax-root is a direct child of the window's own content
+   element — which is why tracker.hbs no longer wraps it in an extra div
+   (that div had no height of its own, so #drinax-root's 100% resolved
+   against nothing and the main tracker window couldn't scroll past a
+   certain amount of factions/contacts/worlds; confirmed live 2026-09).
+   DrinaxEntityWindow's own markup already puts #drinax-root at the top
+   level for the same reason. */
 #drinax-root * { box-sizing: border-box; }
 
 /* "Use Standard Foundry Styling" world setting (off by default) — swaps
